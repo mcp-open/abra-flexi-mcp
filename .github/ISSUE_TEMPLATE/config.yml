@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📚 Dokumentace
+    url: https://github.com/LukasOrcik/abra-flexi-mcp/blob/main/README.md
+    about: Přečtěte si dokumentaci před vytvořením issue
+  - name: 💬 Diskuze
+    url: https://github.com/LukasOrcik/abra-flexi-mcp/discussions
+    about: Máte otázku? Zahajte diskuzi
+  - name: 🌐 OpenMCP
+    url: https://openmcp.cz
+    about: Navštivte neziskový projekt OpenMCP
