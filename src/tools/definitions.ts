@@ -209,4 +209,146 @@ Recommended: Use "compact" for lists, "standard" for detail views, "audit-fast" 
       },
     },
   },
+
+  // Received Orders Tool
+  {
+    name: 'objednavka-prijata',
+    description: 'Get received orders (objednávky prijaté) with advanced filtering, sorting, and detail options. Can retrieve specific order by ID or list orders with comprehensive query capabilities.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Specific order ID to retrieve (e.g., "9120").',
+        },
+        detail: {
+          type: 'string',
+          enum: ['id', 'summary', 'full'],
+          description: 'Level of detail to return. Default: "summary" for lists, "full" for single order.',
+        },
+        includeItems: {
+          type: 'boolean',
+          description: 'Include order line items (polozkyObchDokladu) in response',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of orders to return when listing',
+        },
+        offset: {
+          type: 'number',
+          description: 'Number of orders to skip for pagination',
+        },
+        filter: {
+          type: 'string',
+          description: 'Raw Flexibee filter string',
+        },
+        datVystOd: {
+          type: 'string',
+          description: 'Filter by issue date from (YYYY-MM-DD)',
+        },
+        datVystDo: {
+          type: 'string',
+          description: 'Filter by issue date to (YYYY-MM-DD)',
+        },
+        cisObj: {
+          type: 'string',
+          description: 'Filter by order number (e.g., "O23286")',
+        },
+        firma: {
+          type: 'string',
+          description: 'Filter by customer ID or code',
+        },
+        stitky: {
+          type: 'string',
+          description: 'Filter by tags (štítky)',
+        },
+        order: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } }
+          ],
+          description: 'Order by field(s)',
+        },
+        orderDirection: {
+          type: 'string',
+          enum: ['asc', 'desc', 'A', 'D'],
+          description: 'Order direction',
+        },
+        addRowCount: {
+          type: 'boolean',
+          description: 'Add total count of records to response',
+        },
+        noExtIds: {
+          type: 'boolean',
+          description: 'Exclude external IDs for better performance',
+        },
+        noIds: {
+          type: 'boolean',
+          description: 'Exclude internal IDs from response',
+        },
+        codeAsId: {
+          type: 'boolean',
+          description: 'Use code as identifier instead of internal ID',
+        },
+      },
+    },
+  },
+
+  // Received Orders Storno Audit Tool
+  {
+    name: 'objednavka-prijata-storno-audit',
+    description: '[STORNO AUDIT] Storno detection audit for received orders from Dativery integration. Automatically filters and returns ONLY orders with storno issues: orders marked as storno (storno=true). Includes order items with storno-specific fields. Perfect for checking cancelled orders from e-shop.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        // Basic parameters
+        id: {
+          type: 'string',
+          description: 'Specific order ID to audit (e.g., "9120"). Required for single order check.',
+        },
+
+        // Filtering parameters (for listing)
+        filter: {
+          type: 'string',
+          description: 'Raw Flexibee filter string for listing orders to audit',
+        },
+        datVystOd: {
+          type: 'string',
+          description: 'Filter by issue date from (YYYY-MM-DD)',
+        },
+        datVystDo: {
+          type: 'string',
+          description: 'Filter by issue date to (YYYY-MM-DD)',
+        },
+        cisObj: {
+          type: 'string',
+          description: 'Filter by order number (e.g., "O23286")',
+        },
+
+        // Pagination
+        limit: {
+          type: 'number',
+          description: 'Maximum number of orders to audit (default: 10, max: 50)',
+        },
+        offset: {
+          type: 'number',
+          description: 'Number of orders to skip for pagination',
+        },
+
+        // Ordering
+        order: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } }
+          ],
+          description: 'Order by field(s). Examples: "datVyst", ["datVyst", "kod"]',
+        },
+        orderDirection: {
+          type: 'string',
+          enum: ['asc', 'desc', 'A', 'D'],
+          description: 'Order direction (default: desc for dates)',
+        },
+      },
+    },
+  },
 ];

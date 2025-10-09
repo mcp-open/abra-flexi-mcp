@@ -197,3 +197,33 @@ export interface FakturaVydanaQueryParams {
   noIds?: boolean; // Exclude internal IDs
   codeAsId?: boolean; // Use code as identifier instead of ID
 }
+
+/**
+ * Objednavka Prijata (Received Order) query parameters
+ */
+export interface ObjednavkaPrijataQueryParams {
+  id?: string;
+  detail?: DetailMode;
+  includeItems?: boolean;
+  useRelations?: boolean;
+  limit?: number;
+  offset?: number;
+
+  // Filtering parameters
+  filter?: string; // Raw filter string
+  datVystOd?: string; // Date from (YYYY-MM-DD)
+  datVystDo?: string; // Date to (YYYY-MM-DD)
+  cisObj?: string; // Order number (e.g., "O23286")
+  firma?: string; // Customer ID or code
+  stitky?: string; // Tags filter
+
+  // Ordering parameters
+  order?: string | string[]; // Single or multiple order fields
+  orderDirection?: 'asc' | 'desc' | 'A' | 'D'; // Direction for simple ordering
+
+  // Extended information
+  addRowCount?: boolean; // Add total count of records
+  noExtIds?: boolean; // Exclude external IDs for performance
+  noIds?: boolean; // Exclude internal IDs
+  codeAsId?: boolean; // Use code as identifier instead of ID
+}

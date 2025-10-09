@@ -523,6 +523,83 @@ export const FAKTURA_VYDANA_ITEMS_AUDIT_FAST_FIELDS = [
 ] as const;
 
 /**
+ * Objednavka Prijata - Storno Audit header fields
+ * Ultra-compact fields for order header in storno audit
+ */
+export const OBJEDNAVKA_PRIJATA_STORNO_AUDIT_HEADER_FIELDS = [
+  // Identification
+  'id',
+  'kod',
+  'cisDosle',
+  'varSym',
+
+  // Dates
+  'datVyst',
+  'lastUpdate',
+
+  // Customer (minimal)
+  'firma',
+  'nazFirmy',
+  'stat',
+
+  // Storno indicators (CRITICAL)
+  'storno',
+  'stavDoklObch',
+  'stavUzivK',
+  'cisSml',
+
+  // Sums (CRITICAL for detection)
+  'sumCelkem',
+  'sumZklCelkem',
+  'sumDphCelkem',
+
+  // Currency
+  'mena',
+  'kurz',
+
+  // Document type
+  'typDokl',
+
+  // Dativery tracking
+  'source',
+  'external-ids',
+
+  // Tags
+  'stitky',
+] as const;
+
+/**
+ * Objednavka Prijata Items - Storno Audit mode fields
+ * Ultra-compact version for storno detection in Dativery orders
+ * Note: objednavka-prijata items don't have storno/stornoPol fields
+ */
+export const OBJEDNAVKA_PRIJATA_STORNO_AUDIT_ITEM_FIELDS = [
+  // Identification
+  'id',
+  'kod',
+  'nazev',
+  'cisRad',
+
+  // Sums (CRITICAL for storno detection)
+  'sumCelkem',
+  'sumZkl',
+  'sumDph',
+
+  // Quantity and price
+  'mnozMj',
+  'mnozMjZbyva',
+  'cenaMj',
+
+  // VAT
+  'typSzbDphK',
+  'szbDph',
+
+  // Product info
+  'cenik',
+  'sklad',
+] as const;
+
+/**
  * Filter invoice items for audit mode
  */
 export function filterInvoiceItemsForAudit(items: any[], fast: boolean = false): any[] {
@@ -541,4 +618,30 @@ export function filterInvoiceItemsForAudit(items: any[], fast: boolean = false):
   return items.map(item =>
     filterFields(item, FAKTURA_VYDANA_ITEMS_AUDIT_FIELDS, false)
   );
+}
+
+/**
+ * Filter order items for storno audit (Dativery)
+ */
+export function filterOrderItemsForStornoAudit(items: any[]): any[] {
+  if (!Array.isArray(items)) {
+    return items;
+  }
+
+  // Ultra-compact: only storno detection fields, no @ref/@showAs
+  return items.map(item =>
+    filterFields(item, OBJEDNAVKA_PRIJATA_STORNO_AUDIT_ITEM_FIELDS, true)
+  );
+}
+
+/**
+ * Filter order header for storno audit (Dativery)
+ */
+export function filterOrderHeaderForStornoAudit(order: any): any {
+  if (!order) {
+    return order;
+  }
+
+  // Ultra-compact: only storno detection fields, no @ref/@showAs
+  return filterFields(order, OBJEDNAVKA_PRIJATA_STORNO_AUDIT_HEADER_FIELDS, true);
 }
