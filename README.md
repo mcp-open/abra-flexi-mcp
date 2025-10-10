@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/mcp-open-abra-flexi-mcp-badge.png)](https://mseep.ai/app/mcp-open-abra-flexi-mcp)
+
 # ABRA FlexiBee MCP Server
 
 > **AI asistent pro účetní a auditory**
