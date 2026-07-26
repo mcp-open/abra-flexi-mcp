@@ -270,36 +270,37 @@ def test_products_name_filter_client_side(upstream):
 
 def test_conn_ok(upstream):
     upstream(lambda request: xml_response(winstrom_xml("company", [{"id": "1"}])))
-    assert connection_check({"password": "p"}, dict(CONFIG))["ok"] is True
+    with ctx():
+        assert connection_check() == "Spojení s ABRA Flexi funguje."
 
 
 def test_conn_missing_credentials():
-    result = connection_check({}, {})
-    assert result["ok"] is False
-    assert result["code"] == "missing_credentials"
+    with ctx(secrets={}), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is ErrorCode.INVALID_INPUT
 
 
 @pytest.mark.parametrize(
     "status,code",
     [
-        (401, "unauthorized"),
-        (403, "unauthorized"),
-        (404, "unknown_company"),
-        (500, "upstream_unavailable"),
+        (401, ErrorCode.INVALID_INPUT),
+        (403, ErrorCode.INVALID_INPUT),
+        (404, ErrorCode.INVALID_INPUT),
+        (500, ErrorCode.UPSTREAM_UNAVAILABLE),
     ],
 )
 def test_conn_classifies_by_status(upstream, status, code):
     upstream(lambda request: httpx.Response(status, text="tajemstvi"))
-    result = connection_check({"password": "p"}, dict(CONFIG))
-    assert result["ok"] is False
-    assert result["code"] == code
-    assert "tajemstvi" not in result["message"]
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is code
+    assert "tajemstvi" not in excinfo.value.message
 
 
 def test_conn_invalid_url(upstream):
     upstream(lambda request: xml_response(WRITE_OK))
-    result = connection_check(
-        {"password": "p"}, {**CONFIG, "api_url": "http://demo.flexibee.eu:5434"}
-    )
-    assert result["ok"] is False
-    assert result["code"] == "invalid_input"
+    with ctx(
+        config={**CONFIG, "api_url": "http://demo.flexibee.eu:5434"}
+    ), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is ErrorCode.INVALID_INPUT

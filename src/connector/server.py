@@ -1307,45 +1307,44 @@ async def update_stock_movement_items(
 # -- test spojení --------------------------------------------------------------
 
 
-def test_connection(secrets: dict[str, str], config: dict[str, Any]) -> dict[str, Any]:
-    """Ověří credentials uživatele před uložením do trezoru.
+def test_connection() -> str:
+    """Ověří přesně tu verzi credentials, kterou SDK vložilo do kontextu.
 
-    Klasifikuje se podle ``ConnectorError.status``, ne parsováním textu.
-    Nikdy se nevrací ``str(exc)`` s tělem odpovědi upstreamu — vlastní typové
-    hlášky (např. z validace URL) jsou v pořádku.
+    Hosted ``/internal/credential-test`` nepřenáší tajemství v těle requestu.
+    SDK načte konkrétní staged verzi z Vaultu, vytvoří ``current_context`` a
+    callback volá bez argumentů. Stejný kontrakt používají i ostatní hosted
+    konektory; starý podpis ``(secrets, config)`` by skončil jako interní chyba.
+
+    Klasifikace používá ``ConnectorError.status``, ne text odpovědi upstreamu.
+    Syrové vendor tělo se nikdy nevrací do API ani logu.
     """
-    api_url = str(config.get("api_url") or "")
-    company = str(config.get("company") or "")
-    username = str(config.get("username") or "")
-    password = secrets.get("password", "")
-    if not (api_url and company and username and password):
-        return {
-            "ok": False,
-            "message": "Chybí URL serveru, kód firmy, uživatel nebo heslo.",
-            "code": "missing_credentials",
-        }
     try:
-        with Client(api_url, company, username, password) as client:
-            client.company_info()
+        session = _Session()
+    except (ConnectorError, KeyError) as exc:
+        raise ConnectorError(
+            ErrorCode.INVALID_INPUT,
+            "Chybí nebo jsou neplatné údaje připojení k ABRA Flexi.",
+        ) from exc
+
+    try:
+        session.client.company_info()
     except ConnectorError as exc:
         if exc.status in (401, 403):
-            return {
-                "ok": False,
-                "message": "Flexi odmítla přihlášení — zkontroluj uživatele a heslo.",
-                "code": "unauthorized",
-            }
+            raise ConnectorError(
+                ErrorCode.INVALID_INPUT,
+                "Flexi odmítla přihlášení — zkontroluj uživatele a heslo.",
+            ) from exc
         if exc.status == 404:
-            return {
-                "ok": False,
-                "message": "Firma s tímto kódem na serveru není — zkontroluj pole company.",
-                "code": "unknown_company",
-            }
+            raise ConnectorError(
+                ErrorCode.INVALID_INPUT,
+                "Firma s tímto kódem na serveru není — zkontroluj kód firmy.",
+            ) from exc
         if exc.status is None and exc.code is ErrorCode.INVALID_INPUT:
-            # Naše vlastní validace URL — typová hláška, žádné tělo upstreamu.
-            return {"ok": False, "message": exc.message, "code": "invalid_input"}
-        return {
-            "ok": False,
-            "message": "Server ABRA Flexi je nedostupný, zkus to prosím později.",
-            "code": "upstream_unavailable",
-        }
-    return {"ok": True, "message": "Spojení funguje."}
+            raise
+        raise ConnectorError(
+            ErrorCode.UPSTREAM_UNAVAILABLE,
+            "Server ABRA Flexi je nedostupný, zkus to prosím později.",
+        ) from exc
+    finally:
+        session.client.close()
+    return "Spojení s ABRA Flexi funguje."
