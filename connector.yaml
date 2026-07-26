@@ -1,0 +1,253 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# connector.yaml — jediný deklarativní zdroj pravdy o konektoru.
+#
+# Čtou ho DVA přísné parsery a oba musí projít:
+#   1. openmcp_sdk.manifest.load_manifest   (runtime, extra="forbid")
+#   2. platform/api/internal/provision      (Go, generuje k8s + Vault)
+# Ověření obou najednou:  openmcp-sdk validate connector.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Slug je jednoslovný záměrně: `Manifest.env_names()` z něj skládá env
+# proměnné bez náhrady pomlček — `abra-flexi` by dal neexportovatelné
+# `ABRA-FLEXI_*`. Adresář repozitáře zůstává `abra-flexi-mcp`; build kontext
+# ho přejmenovává na slug.
+slug: abraflexi
+name: ABRA Flexi
+
+# version — musí se shodovat s [project].version v pyproject.toml.
+# Hlídá tests/test_packaging.py.
+version: 0.1.0
+
+category: ucetnictvi
+summary: >
+  Čtecí a zapisovací přístup k ABRA Flexi (FlexiBee) — vydané faktury a jejich
+  zaúčtování, typy dokladů, účetní deník, přijaté objednávky, skladové pohyby,
+  stav skladu a ceník. Zápisy (oprava zaúčtování hlavičky a položek faktury,
+  založení skladového pohybu) vyžadují potvrzení uživatele s konkrétním diffem.
+  Osobní údaje kontaktů (e-maily, telefony, adresy a bankovní spojení) jsou
+  pseudonymizovány na stabilní tokeny; IČ, DIČ a názvy firem zůstávají čitelné.
+
+sdk_min_version: 0.4.0
+
+# ── AUTENTIZACE ──────────────────────────────────────────────────────────────
+# ABRA Flexi je per-zákazník instance: URL, firma i uživatel se liší per
+# aktivace, tajemství je jen heslo. Env názvy v local-stdio: ABRAFLEXI_<KEY>.
+credentials:
+  - key: api_url
+    label: URL Flexi serveru
+    type: string
+    secret: false
+    required: true
+    hint: "Adresa cloudové instance ABRA Flexi včetně portu, např. https://firma.flexibee.eu:5434"
+  - key: company
+    label: Identifikátor firmy
+    type: string
+    secret: false
+    required: true
+    hint: "Kód firmy (databáze) ve Flexi — část URL za /c/, např. firma_s_r_o_1"
+  - key: username
+    label: Uživatelské jméno
+    type: string
+    secret: false
+    required: true
+    hint: "Přihlašovací jméno uživatele Flexi. Doporučujeme vyhrazeného API uživatele s právy podle zamýšleného použití (jen čtení, nebo čtení a zápis)."
+  - key: password
+    label: Heslo
+    type: string
+    secret: true
+    required: true
+    hint: "Heslo uživatele Flexi (ukládá se write-only do trezoru)"
+
+user_config: []
+
+# operator_config — nastavuje provozovatel platformy, ne uživatel.
+# `read_only` je speciální: SDK ho čte a podle něj fail-closed odregistruje
+# nástroje bez readOnlyHint=True.
+operator_config:
+  - key: read_only
+    label: Pouze čtení
+    type: bool
+    default: true
+    hint: "Zapnuté = registrují se jen čtecí nástroje; zapisovací (oprava zaúčtování, skladové pohyby) se při startu vůbec nenačtou."
+  - key: redact_pii
+    label: Pseudonymizovat osobní údaje
+    type: bool
+    default: true
+    hint: "Nahradí e-maily, telefony, adresy a bankovní spojení kontaktů stabilními tokeny (<EMAIL_3f9c…>) dřív, než odpověď opustí konektor. IČ, DIČ a názvy firem zůstávají čitelné."
+  - key: redact_names
+    label: Pseudonymizovat i jména osob
+    type: bool
+    default: false
+    hint: "Tokenizuje i jména kontaktních osob na dokladech. Vyžaduje zapnuté „Pseudonymizovat osobní údaje“."
+  - key: require_write_confirmation
+    label: Vyžadovat potvrzení zápisu
+    type: bool
+    default: true
+    hint: "Před každým zápisem si konektor vyžádá souhlas uživatele s konkrétním diffem. VYPÍNEJ JEN VĚDOMĚ: potvrzení je jediná vrstva, která zastaví prompt injection z obsahu účetnictví. Vyžaduje klienta s podporou MCP elicitation."
+
+# ── SCHOPNOSTI ───────────────────────────────────────────────────────────────
+capabilities:
+  default_read_only: true
+  supports_write: true
+  supports_test: true
+
+# ── VEŘEJNÝ MANIFEST ─────────────────────────────────────────────────────────
+# display.tools NENÍ kosmetika: operátor z něj klasifikuje tool policies.
+# Seznam se musí přesně krýt se zaregistrovanými nástroji (hlídá conformance).
+display:
+  schema_version: 1
+  capabilities:
+    - "Číst vydané i přijaté faktury, jejich zaúčtování a účetní deník z ABRA Flexi"
+    - "Číst přijaté objednávky, banku, pokladnu, skladové pohyby, stav skladu a ceník"
+    - "Číst účetní reporty (hlavní kniha, předvaha, výsledovka, saldo) a podklady DPH"
+    - "Generické čtení všech běžných evidencí (adresář, banka, pokladna, majetek, číselníky…) přes katalogový allowlist, včetně souhrnů a popisu polí"
+    - "Opravit zaúčtování faktury (hlavičku i položky) a založit skladový pohyb — vždy s potvrzením uživatele"
+  permissions:
+    - "Čtení (GET) přes Flexi REST API; zápis (POST/PUT) jen při vypnutém režimu „Pouze čtení“ a po potvrzení uživatelem"
+    - "Vyžaduje přihlašovací údaje uživatele Flexi (heslo uloženo write-only v trezoru, v DB jen maska)"
+  data_handling: "Osobní údaje kontaktů (e-maily, telefony, adresy a bankovní spojení) jsou před odesláním do LLM pseudonymizovány na stabilní tokeny (např. <EMAIL_3f9c1a2b4d5e>). Token je odvozen jednosměrně (HMAC) a nedá se rozšifrovat zpět — nikde nevzniká re-identifikační mapa. IČ, DIČ a názvy firem (veřejné registrové údaje) zůstávají čitelné; jména osob se ve výchozím nastavení nepseudonymizují (viz nastavení konektoru)."
+  example_query: "Ukaž mi vydané faktury za listopad a zkontroluj, na jaký výnosový účet jsou zaúčtované."
+  tools:
+    - name: get_company_info
+      description: "Základní informace o firmě (účetní jednotce) ve Flexi"
+    - name: list_issued_invoices
+      description: "Seznam vydaných faktur s filtry podle data vystavení a stavu úhrady"
+    - name: get_issued_invoice
+      description: "Detail vydané faktury (podle ID nebo kódu) včetně položek a zaúčtování"
+    - name: list_invoice_types
+      description: "Typy vydaných faktur včetně vazby na předpis zaúčtování"
+    - name: get_invoice_journal
+      description: "Zápisy účetního deníku k dokladu (účty MD/DAL)"
+    - name: list_received_orders
+      description: "Seznam přijatých objednávek s filtry podle data vystavení"
+    - name: get_received_order
+      description: "Detail přijaté objednávky (podle ID nebo kódu) včetně položek"
+    - name: list_stock_movements
+      description: "Seznam skladových pohybů (příjemky a výdejky) za období"
+    - name: get_stock_movement
+      description: "Detail skladového pohybu (podle ID nebo kódu) včetně položek"
+    - name: get_stock_status
+      description: "Stav zásob na skladě k zadanému datu"
+    - name: list_products
+      description: "Seznam produktů a služeb z ceníku s filtry"
+    - name: get_product
+      description: "Detail položky ceníku podle ID nebo kódu"
+    # Generické čtení — allowlist evidencí v src/connector/registry.py.
+    - name: list_companies
+      description: "Seznam firem (databází) na připojeném Flexi serveru"
+    - name: list_evidences
+      description: "Katalog evidencí dostupných přes generické čtecí nástroje"
+    - name: list_records
+      description: "Generický seznam záznamů podporované evidence se strukturovaným filtrem"
+    - name: get_record
+      description: "Generický detail záznamu podporované evidence podle ID nebo kódu"
+    - name: sum_records
+      description: "Souhrn ($sum) evidence, volitelně nad filtrem — kontrolní součty bez stahování dat"
+    - name: get_evidence_properties
+      description: "Popis polí evidence (samodokumentace instance) — typy, povinnost, editovatelnost"
+    # Zapisovací nástroje — dostupné jen při vypnutém „Pouze čtení".
+    - name: update_invoice_header
+      description: "Opraví zaúčtování hlavičky vydané faktury (typ dokladu, předpis, protiúčet, členění DPH)"
+    - name: update_invoice_item
+      description: "Opraví zaúčtování jedné položky faktury jedním agregovaným zápisem"
+    - name: create_stock_movement
+      description: "Založí skladový pohyb (příjemku) s položkami"
+    - name: update_stock_movement_items
+      description: "Upraví ceny nebo množství položek existujícího skladového pohybu"
+  locales:
+    cs:
+      name: "ABRA Flexi"
+      description: "Propojení s účetnictvím ABRA Flexi (FlexiBee) — faktury, zaúčtování, banka, pokladna, sklad, DPH podklady a účetní reporty, s ochranou osobních údajů a potvrzovanými zápisy."
+      capabilities:
+        - "Číst vydané i přijaté faktury, jejich zaúčtování a účetní deník"
+        - "Číst banku, pokladnu, sklad, smlouvy, DPH podklady a účetní reporty (hlavní kniha, předvaha, výsledovka)"
+        - "Volitelné zápisy (oprava zaúčtování, skladové pohyby) vyžadují samostatné povolení i potvrzení"
+      permissions:
+        - "Ve výchozím nastavení pouze čtení přes Flexi REST API"
+        - "Vyžaduje přihlašovací údaje uživatele Flexi; heslo je uloženo write-only v trezoru"
+      data_handling: "E-maily, telefony, adresy a bankovní spojení kontaktů se před odpovědí pseudonymizují jednosměrnými tokeny. IČ, DIČ a názvy firem zůstávají čitelné; jména osob lze volitelně také pseudonymizovat."
+      example_query: "Ukaž mi vydané faktury za listopad a zkontroluj, na jaký výnosový účet jsou zaúčtované."
+      fields:
+        - { key: api_url, label: "URL Flexi serveru" }
+        - { key: company, label: "Identifikátor firmy" }
+        - { key: username, label: "Uživatelské jméno" }
+        - { key: password, label: "Heslo" }
+      tools:
+        - { name: get_company_info, description: "Základní informace o firmě (účetní jednotce)" }
+        - { name: list_issued_invoices, description: "Seznam vydaných faktur s filtry data a stavu úhrady" }
+        - { name: get_issued_invoice, description: "Detail vydané faktury včetně položek a zaúčtování" }
+        - { name: list_invoice_types, description: "Typy vydaných faktur s vazbou na předpis zaúčtování" }
+        - { name: get_invoice_journal, description: "Zápisy účetního deníku k dokladu (účty MD/DAL)" }
+        - { name: list_received_orders, description: "Seznam přijatých objednávek s filtry data" }
+        - { name: get_received_order, description: "Detail přijaté objednávky včetně položek" }
+        - { name: list_stock_movements, description: "Skladové pohyby za období s filtrem směru a skladu" }
+        - { name: get_stock_movement, description: "Detail skladového pohybu včetně položek" }
+        - { name: get_stock_status, description: "Stav zásob na skladě k zadanému datu" }
+        - { name: list_products, description: "Seznam produktů a služeb z ceníku s filtry" }
+        - { name: get_product, description: "Detail položky ceníku podle ID nebo kódu" }
+        - { name: list_companies, description: "Seznam firem (databází) na připojeném serveru" }
+        - { name: list_evidences, description: "Katalog evidencí dostupných přes generické nástroje" }
+        - { name: list_records, description: "Generický seznam záznamů evidence se strukturovaným filtrem" }
+        - { name: get_record, description: "Generický detail záznamu, volitelně s položkami, přílohami a vazbami" }
+        - { name: sum_records, description: "Souhrn ($sum) evidence, volitelně nad filtrem — kontrolní součty bez stahování dat" }
+        - { name: get_evidence_properties, description: "Popis polí evidence — typy, povinnost, editovatelnost" }
+        - { name: update_invoice_header, description: "Opraví zaúčtování hlavičky vydané faktury" }
+        - { name: update_invoice_item, description: "Opraví zaúčtování položky faktury jedním zápisem" }
+        - { name: create_stock_movement, description: "Založí skladový pohyb (příjemku) s položkami" }
+        - { name: update_stock_movement_items, description: "Upraví ceny či množství položek pohybu" }
+    sk:
+      name: "ABRA Flexi"
+      description: "Prepojenie s účtovníctvom ABRA Flexi (FlexiBee) — faktúry, zaúčtovanie, banka, pokladňa, sklad, podklady DPH a účtovné reporty, s ochranou osobných údajov a potvrdzovanými zápismi."
+      capabilities:
+        - "Čítať vydané aj prijaté faktúry, ich zaúčtovanie a účtovný denník"
+        - "Čítať banku, pokladňu, sklad, zmluvy, podklady DPH a účtovné reporty (hlavná kniha, predvaha, výsledovka)"
+        - "Voliteľné zápisy (oprava zaúčtovania, skladové pohyby) vyžadujú samostatné povolenie aj potvrdenie"
+      permissions:
+        - "V predvolenom nastavení iba čítanie cez Flexi REST API"
+        - "Vyžaduje prihlasovacie údaje používateľa Flexi; heslo je uložené write-only v trezore"
+      data_handling: "E-maily, telefóny, adresy a bankové spojenia kontaktov sa pred odpoveďou pseudonymizujú jednosmernými tokenmi. IČO, DIČ a názvy firiem zostávajú čitateľné; mená osôb možno voliteľne tiež pseudonymizovať."
+      example_query: "Ukáž mi vydané faktúry za november a skontroluj, na aký výnosový účet sú zaúčtované."
+      fields:
+        - { key: api_url, label: "URL Flexi servera" }
+        - { key: company, label: "Identifikátor firmy" }
+        - { key: username, label: "Používateľské meno" }
+        - { key: password, label: "Heslo" }
+      tools:
+        - { name: get_company_info, description: "Základné informácie o firme (účtovnej jednotke)" }
+        - { name: list_issued_invoices, description: "Zoznam vydaných faktúr s filtrami dátumu a stavu úhrady" }
+        - { name: get_issued_invoice, description: "Detail vydanej faktúry vrátane položiek a zaúčtovania" }
+        - { name: list_invoice_types, description: "Typy vydaných faktúr s väzbou na predpis zaúčtovania" }
+        - { name: get_invoice_journal, description: "Zápisy účtovného denníka k dokladu (účty MD/DAL)" }
+        - { name: list_received_orders, description: "Zoznam prijatých objednávok s filtrami dátumu" }
+        - { name: get_received_order, description: "Detail prijatej objednávky vrátane položiek" }
+        - { name: list_stock_movements, description: "Skladové pohyby za obdobie s filtrom smeru a skladu" }
+        - { name: get_stock_movement, description: "Detail skladového pohybu vrátane položiek" }
+        - { name: get_stock_status, description: "Stav zásob na sklade k zadanému dátumu" }
+        - { name: list_products, description: "Zoznam produktov a služieb z cenníka s filtrami" }
+        - { name: get_product, description: "Detail položky cenníka podľa ID alebo kódu" }
+        - { name: list_companies, description: "Zoznam firiem (databáz) na pripojenom serveri" }
+        - { name: list_evidences, description: "Katalóg evidencií dostupných cez generické nástroje" }
+        - { name: list_records, description: "Generický zoznam záznamov evidencie so štruktúrovaným filtrom" }
+        - { name: get_record, description: "Generický detail záznamu, voliteľne s položkami, prílohami a väzbami" }
+        - { name: sum_records, description: "Súhrn ($sum) evidencie, voliteľne nad filtrom" }
+        - { name: get_evidence_properties, description: "Popis polí evidencie — typy, povinnosť, editovateľnosť" }
+        - { name: update_invoice_header, description: "Opraví zaúčtovanie hlavičky vydanej faktúry" }
+        - { name: update_invoice_item, description: "Opraví zaúčtovanie položky faktúry jedným zápisom" }
+        - { name: create_stock_movement, description: "Založí skladový pohyb (príjemku) s položkami" }
+        - { name: update_stock_movement_items, description: "Upraví ceny či množstvá položiek pohybu" }
+
+# ── EGRESS ───────────────────────────────────────────────────────────────────
+# Cloudové instance ABRA Flexi běží na portu 5434. Per-zákazník hostname řeší
+# wildcard + aplikační validace URL v `client._validated_api_url` (NetworkPolicy
+# neumí vynutit FQDN). Self-hosted instance mimo *.flexibee.eu jsou vědomě mimo
+# rozsah — viz README.
+egress:
+  host: "*.flexibee.eu"
+  port: 5434
+  path_prefix: /c
+  methods: [GET, POST, PUT]
+
+# ── PROVISIONING ─────────────────────────────────────────────────────────────
+runtime:
+  pii_salt: true
+  health_path: /healthz

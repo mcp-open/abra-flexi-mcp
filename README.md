@@ -1,136 +1,77 @@
-# ABRA FlexiBee MCP Server
+# abraflexi-mcp
 
-> **AI asistent pro účetní a auditory**
+MCP konektor pro **ABRA Flexi** (dříve FlexiBee) — čtecí a zapisovací přístup
+k účetnictví: vydané faktury a jejich zaúčtování, účetní deník, přijaté
+objednávky, skladové pohyby, stav skladu a ceník.
 
-Propojte Claude AI s ABRA FlexiBee a automatizujte kontrolu účetnictví, DPH a objednávek z e-shopu.
+Postavený nad [openmcp-sdk](../openmcp-sdk) podle sjednocené šablony
+[template-mcp](../template-mcp). Deklarativní zdroj pravdy je
+[`connector.yaml`](connector.yaml); doménová znalost Flexi API je
+v [`docs/MCP_PODKLAD.md`](docs/MCP_PODKLAD.md).
 
-✅ Automatická kontrola DPH a OSS režimů
-✅ Audit stornovaných objednávek z Dativery
-✅ 93% redukce dat pro rychlé AI zpracování
-✅ GDPR anonymizace osobních údajů
+## Nástroje
 
----
+**Čtení** (18): specializované `get_company_info`, `list_issued_invoices`,
+`get_issued_invoice`, `list_invoice_types`, `get_invoice_journal`,
+`list_received_orders`, `get_received_order`, `list_stock_movements`,
+`get_stock_movement`, `get_stock_status`, `list_products`, `get_product` +
+**generická vrstva** nad allowlistem ~180 evidencí
+(`src/connector/registry.py`, katalog z dokumentace API §16.3 doplněný podle
+živého `/evidence-list` reálné instance — včetně účetních reportů jako hlavní
+kniha, obratová předvaha, výsledovka, saldo, po splatnosti a podkladů DPH):
+`list_companies` (databáze na serveru), `list_evidences`, `list_records`
+(strukturovaný filtr — pole + operátor z uzavřené množiny + hodnota,
+spojované přes AND), `get_record` (volitelně `relations`: položky, přílohy,
+vazby — např. kterou platbou je faktura uhrazená), `sum_records` (`$sum`,
+exponenciální čísla normalizovaná na běžný zápis) a
+`get_evidence_properties` (samodokumentace polí instance). Položky dokladů
+se čtou přes `relations=polozky` a obal kolekce (`polozkyFaktury` →
+`faktura-vydana-polozka`) se kolabuje na přímý seznam.
 
-## 🚀 Rychlý start
+**Zápis** (4, jen při vypnutém `read_only`): `update_invoice_header`,
+`update_invoice_item`, `create_stock_movement`,
+`update_stock_movement_items`. Každý zápis prochází vrstvami
+`openmcp_sdk.write`: politika workspace → strop zápisů v okně → diff →
+**potvrzení člověkem** → audit. Payloady se skládají výhradně z allowlistů.
 
-### 1. Instalace
+## Osobní údaje
+
+E-maily, telefony, adresy a bankovní spojení kontaktů se pseudonymizují
+stabilními tokeny (`<EMAIL_3f9c1a2b4d5e>`); IČ, DIČ a názvy firem zůstávají
+čitelné. Detaily a záznam podle čl. 30 v
+[`docs/COMPLIANCE.md`](docs/COMPLIANCE.md).
+
+## Vědomá omezení v1
+
+- **Jen cloud `*.flexibee.eu:5434`.** URL instance je credential zákazníka a
+  konektor ji váže na rodinu hostů Flexi cloudu — bez toho by šla Basic
+  autentizace exfiltrovat na libovolný host (NetworkPolicy neumí FQDN).
+  Self-hosted instance (vlastní host, self-signed certifikát) vyžadují
+  samostatné nasazení s vlastním manifestem; `verify=False` konektor záměrně
+  neumí.
+- **XML rozhraní.** Flexi API se volá přes `.xml` endpointy (`winstrom`
+  obálka) — XML větev API je lépe dokumentovaná a JSON varianta se v praxi
+  ukázala problematická. Úspěch zápisu se čte z `winstrom.success`, ne z HTTP
+  stavu.
+- **Filtry bez volné syntaxe.** Filtr Flexi patří do URL cesty, takže je to
+  injection kanál — konektor vystavuje jen typované parametry s validací
+  hodnot; „raw filter" vstup neexistuje. Kde jsou serverové filtry
+  nespolehlivé (skladové pohyby, ceník), filtruje se u nás nad stránkovaným
+  průchodem se stropem.
+- Nevystavují se: mazání, zápisy do adresáře, storno, hromadné operace ani
+  generický zápis do libovolné evidence (zdůvodnění v `server.py`).
+
+## Lokální vývoj
 
 ```bash
-npm install
-npm run build
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e ../openmcp-sdk -e '.[test]'
+OPENMCP_PII_SALT=test-pii-salt .venv/bin/python -m pytest tests -q
 ```
 
-### 2. Konfigurace
+Spuštění v local-stdio proti demo instanci: zkopíruj `.env.example` na
+`.env` (demo: `https://demo.flexibee.eu:5434`, firma `demo`,
+winstrom/winstrom) a spusť `python -m connector` z kořene repozitáře.
 
-Přidejte do `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "flexibee": {
-      "command": "node",
-      "args": ["/cesta/k/projektu/dist/index.js"],
-      "env": {
-        "FLEXIBEE_URL": "https://vas-server.flexibee.eu:5434",
-        "FLEXIBEE_COMPANY": "firma",
-        "FLEXIBEE_USERNAME": "uzivatel",
-        "FLEXIBEE_PASSWORD": "heslo",
-        "FLEXIBEE_ANONYMIZE_DATA": "false"
-      }
-    }
-  }
-}
-```
-
-### 3. Použití
-
-Zeptejte se Claude AI:
-
-```
-"Zkontroluj fakturu 10045 na DPH chyby"
-"Najdi všechny stornované objednávky za září"
-"Která faktury jsou neuhrazené a po splatnosti?"
-```
-
----
-
-## 📦 Dostupné nástroje
-
-### 🧾 Faktury
-
-| Nástroj | Popis | Dokumentace |
-|---------|-------|-------------|
-| `company` | Informace o firmě | - |
-| `faktura-vydana` | Vydané faktury s filtrováním | [📖 Detaily](docs/faktura-vydana.md) |
-| `faktura-vydana-audit` | DPH a účetní audit faktur | [📖 Detaily](docs/faktura-vydana-audit.md) |
-
-### 🛒 Objednávky (Dativery / Upgates e-shop)
-
-| Nástroj | Popis | Dokumentace |
-|---------|-------|-------------|
-| `objednavka-prijata` | Přijaté objednávky | [📖 Detaily](docs/objednavka-prijata.md) |
-| `objednavka-prijata-storno-audit` | Audit stornovaných objednávek | [📖 Detaily](docs/objednavka-prijata-storno-audit.md) |
-
----
-
-## 💡 Hlavní výhody
-
-### ⏱️ Ušetřete čas
-Co byste kontrolovali ručně celé odpoledne, AI zkontroluje za minuty.
-
-### 🎯 Přesné výsledky
-AI zkontroluje každou položku každé faktury - žádné přehlédnuté chyby.
-
-### 🔒 GDPR compliant
-Anonymizace osobních údajů na jedno kliknutí (`FLEXIBEE_ANONYMIZE_DATA=true`).
-
-### 🛠️ Snadné použití
-Žádné složité API - jen přirozený jazyk v Claude AI.
-
----
-
-## 📚 Dokumentace
-
-- **[CHANGELOG.md](CHANGELOG.md)** - Historie změn
-- **[docs/faktura-vydana.md](docs/faktura-vydana.md)** - Detailní dokumentace faktur
-- **[docs/faktura-vydana-audit.md](docs/faktura-vydana-audit.md)** - DPH audit
-- **[docs/objednavka-prijata.md](docs/objednavka-prijata.md)** - Přijaté objednávky
-- **[docs/objednavka-prijata-storno-audit.md](docs/objednavka-prijata-storno-audit.md)** - Storno audit
-
----
-
-## 🛠️ Technické požadavky
-
-- Node.js 18+
-- ABRA FlexiBee přístup (REST API)
-- Claude Desktop nebo jiný MCP klient
-
----
-
-## 👨‍💻 Autor
-
-**Lukáš Orčík**
-Neziskový projekt [OpenMCP](https://openmcp.cz)
-Specialista na účetní automatizaci a AI integrace
-
----
-
-## 📄 Licence
-
-Creative Commons Attribution-NonCommercial 4.0 International (CC-BY-NC-4.0)
-https://creativecommons.org/licenses/by-nc/4.0/
-
-**Pro komerční využití** kontaktujte autora.
-
----
-
-## 🤝 Podpora
-
-- 🐛 [Nahlásit chybu](https://github.com/LukasOrcik/abra-flexi-mcp/issues/new?template=bug_report.yml)
-- ✨ [Navrhnout funkci](https://github.com/LukasOrcik/abra-flexi-mcp/issues/new?template=feature_request.yml)
-- 🚀 [Navrhnout vylepšení](https://github.com/LukasOrcik/abra-flexi-mcp/issues/new?template=improvement.yml)
-- 💬 [Diskuze](https://github.com/LukasOrcik/abra-flexi-mcp/discussions)
-
----
-
-**Ušetřete stovky hodin práce. Vyzkoušejte ho ještě dnes!** 🚀
+Build image dělá `platform/deploy/Makefile` — build kontext je nadřazený
+adresář a adresář repozitáře se v tar-u přejmenovává na slug `abraflexi`.

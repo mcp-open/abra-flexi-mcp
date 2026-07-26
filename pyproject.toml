@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abraflexi-mcp"
+version = "0.1.0"
+description = "MCP konektor pro ABRA Flexi (FlexiBee) — účetnictví, faktury, sklad."
+requires-python = ">=3.12"
+dependencies = [
+  "openmcp-sdk>=0.4,<0.5",
+  "fastmcp>=2.11,<3",
+  "pydantic>=2.6,<3",
+  "httpx>=0.28,<0.29",
+  "xmltodict>=0.13,<1",
+]
+
+# Deklarované testovací závislosti — `pip install -e '.[test]'` stačí na
+# spuštění celé sady lokálně i v CI (bez ad-hoc instalace v run kroku).
+[project.optional-dependencies]
+test = [
+  "pytest==8.4.2",
+  "anyio>=4,<6",
+  "ruff>=0.6,<1",
+  "mypy>=1.11,<2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Cache mimo repozitář — DrvFs na Windows disku by ji jinak zanášel do statusu.
+cache_dir = "/tmp/.pytest_cache-abraflexi-mcp"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["connector"]
+
+# xmltodict nemá typové stuby a je to úzké, dobře ohraničené API — přetypované
+# v našem `xml_codec`.
+[[tool.mypy.overrides]]
+module = "xmltodict"
+ignore_missing_imports = true
