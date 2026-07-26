@@ -40,11 +40,11 @@ credentials:
     required: true
     hint: "Adresa cloudové instance ABRA Flexi včetně portu, např. https://firma.flexibee.eu:5434"
   - key: company
-    label: Identifikátor firmy
+    label: Firma v ABRA Flexi (kód z adresy)
     type: string
     secret: false
     required: true
-    hint: "Kód firmy (databáze) ve Flexi — část URL za /c/, např. firma_s_r_o_1"
+    hint: "V adrese Flexi najděte část za /c/. Například z …/c/moje_firma/ zadejte moje_firma."
   - key: username
     label: Uživatelské jméno
     type: string
@@ -169,7 +169,7 @@ display:
       example_query: "Ukaž mi vydané faktury za listopad a zkontroluj, na jaký výnosový účet jsou zaúčtované."
       fields:
         - { key: api_url, label: "URL Flexi serveru" }
-        - { key: company, label: "Identifikátor firmy" }
+        - { key: company, label: "Firma v ABRA Flexi (kód z adresy)", hint: "V adrese Flexi najděte část za /c/. Například z …/c/moje_firma/ zadejte moje_firma." }
         - { key: username, label: "Uživatelské jméno" }
         - { key: password, label: "Heslo" }
       tools:
@@ -209,7 +209,7 @@ display:
       example_query: "Ukáž mi vydané faktúry za november a skontroluj, na aký výnosový účet sú zaúčtované."
       fields:
         - { key: api_url, label: "URL Flexi servera" }
-        - { key: company, label: "Identifikátor firmy" }
+        - { key: company, label: "Firma v ABRA Flexi (kód z adresy)", hint: "V adrese Flexi nájdite časť za /c/. Napríklad z …/c/moja_firma/ zadajte moja_firma." }
         - { key: username, label: "Používateľské meno" }
         - { key: password, label: "Heslo" }
       tools:
