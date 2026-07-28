@@ -7,8 +7,16 @@ name = "abraflexi-mcp"
 version = "0.1.0"
 description = "MCP konektor pro ABRA Flexi (FlexiBee) — účetnictví, faktury, sklad."
 requires-python = ">=3.12"
+# openmcp-sdk se nepublikuje na PyPI — jméno tam patří nesouvisejícímu
+# projektu s nejvyšší verzí 0.2.20, takže `pip install` na tomhle balíku
+# selhal a po vydání cizí 0.4.x by nainstaloval cizí kód. Reference míří na
+# commit z `.sdk-ref`; shodu hlídá `tests/test_sdk_pin.py`.
+#
+# POZOR: tenhle konektor je jako jediný v rodině pořád na SDK 0.4.1
+# a FastMCP 2.x. Commit níže žije ve větvi `codex/abraflexi-safe-redirect-20260726`,
+# ne v `main` SDK — přechod na 0.4.2 znamená zároveň FastMCP 2 → 3.
 dependencies = [
-  "openmcp-sdk>=0.4,<0.5",
+  "openmcp-sdk @ git+https://github.com/mcp-open/openmcp-sdk@35f15e2dbd1e28c220a915ba32d682f525393543",
   "fastmcp>=2.11,<3",
   "pydantic>=2.6,<3",
   "httpx>=0.28,<0.29",

@@ -75,3 +75,13 @@ winstrom/winstrom) a spusť `python -m connector` z kořene repozitáře.
 
 Build image dělá `platform/deploy/Makefile` — build kontext je nadřazený
 adresář a adresář repozitáře se v tar-u přejmenovává na slug `abraflexi`.
+
+## Přispívání a bezpečnost
+
+- Postup a nároky na změny: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Hlášení zranitelností: [SECURITY.md](SECURITY.md) — nikdy ne přes veřejné issue
+- Historie změn: [CHANGELOG.md](CHANGELOG.md)
+
+## Licence
+
+MIT — viz [LICENSE](LICENSE).
