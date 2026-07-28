@@ -1,0 +1,29 @@
+name: SDK canary
+
+on:
+  schedule: [{ cron: "20 3 * * *" }]
+  workflow_dispatch:
+
+env:
+  SLUG: abraflexi
+
+jobs:
+  canary:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: "${{ env.SLUG }}" }
+      - uses: actions/checkout@v4
+        with:
+          repository: mcp-open/openmcp-sdk
+          token: ${{ secrets.OPENMCP_CI_TOKEN }}
+          ref: main
+          path: sdk
+      - name: Test against current SDK main
+        run: |
+          docker run --rm -v "$PWD":/src -w /src python:3.13-slim sh -c '
+            set -eu
+            pip install -q --no-cache-dir ./sdk "./'"$SLUG"'[test]"
+            (cd '"$SLUG"' && openmcp-sdk validate connector.yaml)
+            python -m pytest '"$SLUG"'/tests -q
+          '
