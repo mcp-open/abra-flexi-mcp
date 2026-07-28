@@ -13,7 +13,16 @@ WORKDIR /app
 # sdk nejdřív — konektor na něj závisí v pyproject.toml.
 COPY sdk ./sdk
 COPY abraflexi ./abraflexi
-RUN pip install --no-cache-dir --no-compile ./sdk ./abraflexi
+# Závislosti se instalují zvlášť a teprve pak sdk + konektor s `--no-deps`.
+# Bez toho by pip řešil i `openmcp-sdk @ git+https://…` z pyproject.toml,
+# sáhl po `git`, který v image není, a build by spadl — přestože SDK je
+# přímo tady v `./sdk`. Git reference je pravda pro toho, kdo instaluje
+# z čistého klonu; image staví z přesného snapshotu podle `.sdk-ref`.
+RUN pip install --no-cache-dir --no-compile ./sdk \
+    && pip install --no-cache-dir --no-compile \
+      "fastmcp>=2.11,<3" "pydantic>=2.6,<3" "httpx>=0.28,<0.29" "xmltodict>=0.13,<1" \
+    && pip install --no-cache-dir --no-compile --no-deps ./abraflexi \
+    && pip check
 
 # Non-root. UID musí sedět s `runAsUser: 10001` v podSecurityContext.
 RUN useradd --uid 10001 --system --no-create-home --shell /usr/sbin/nologin openmcp
