@@ -16,18 +16,22 @@ name: ABRA Flexi
 
 # version — musí se shodovat s [project].version v pyproject.toml.
 # Hlídá tests/test_packaging.py.
-version: 0.1.0
+version: 0.1.1
 
 category: ucetnictvi
 summary: >
   Čtecí a zapisovací přístup k ABRA Flexi (FlexiBee) — vydané faktury a jejich
   zaúčtování, typy dokladů, účetní deník, přijaté objednávky, skladové pohyby,
   stav skladu a ceník. Zápisy (oprava zaúčtování hlavičky a položek faktury,
-  založení skladového pohybu) vyžadují potvrzení uživatele s konkrétním diffem.
+  založení skladového pohybu) ve výchozím nastavení vyžadují potvrzení
+  uživatele s konkrétním diffem; firemní politika ho může vynutit napevno.
   Osobní údaje kontaktů (e-maily, telefony, adresy a bankovní spojení) jsou
   pseudonymizovány na stabilní tokeny; IČ, DIČ a názvy firem zůstávají čitelné.
 
-sdk_min_version: 0.4.0
+# 0.4.3 je první použitá verze s FastMCP 3, novými strukturovanými health
+# kódy a zpřísněným same-origin redirect kontraktem. Konektor je na stejný
+# commit připnutý v pyproject.toml i .sdk-ref.
+sdk_min_version: 0.4.3
 
 # ── AUTENTIZACE ──────────────────────────────────────────────────────────────
 # ABRA Flexi je per-zákazník instance: URL, firma i uživatel se liší per
@@ -101,9 +105,9 @@ display:
     - "Číst přijaté objednávky, banku, pokladnu, skladové pohyby, stav skladu a ceník"
     - "Číst účetní reporty (hlavní kniha, předvaha, výsledovka, saldo) a podklady DPH"
     - "Generické čtení všech běžných evidencí (adresář, banka, pokladna, majetek, číselníky…) přes katalogový allowlist, včetně souhrnů a popisu polí"
-    - "Opravit zaúčtování faktury (hlavičku i položky) a založit skladový pohyb — vždy s potvrzením uživatele"
+    - "Opravit zaúčtování faktury (hlavičku i položky) a založit skladový pohyb — standardně s potvrzením uživatele, povinně pokud to vyžaduje firemní politika"
   permissions:
-    - "Čtení (GET) přes Flexi REST API; zápis (POST/PUT) jen při vypnutém režimu „Pouze čtení“ a po potvrzení uživatelem"
+    - "Čtení (GET) přes Flexi REST API; zápis (POST/PUT) jen při vypnutém režimu „Pouze čtení“ a podle nastavené politiky potvrzování"
     - "Vyžaduje přihlašovací údaje uživatele Flexi (heslo uloženo write-only v trezoru, v DB jen maska)"
   data_handling: "Osobní údaje kontaktů (e-maily, telefony, adresy a bankovní spojení) jsou před odesláním do LLM pseudonymizovány na stabilní tokeny (např. <EMAIL_3f9c1a2b4d5e>). Token je odvozen jednosměrně (HMAC) a nedá se rozšifrovat zpět — nikde nevzniká re-identifikační mapa. IČ, DIČ a názvy firem (veřejné registrové údaje) zůstávají čitelné; jména osob se ve výchozím nastavení nepseudonymizují (viz nastavení konektoru)."
   example_query: "Ukaž mi vydané faktury za listopad a zkontroluj, na jaký výnosový účet jsou zaúčtované."
@@ -161,17 +165,21 @@ display:
       capabilities:
         - "Číst vydané i přijaté faktury, jejich zaúčtování a účetní deník"
         - "Číst banku, pokladnu, sklad, smlouvy, DPH podklady a účetní reporty (hlavní kniha, předvaha, výsledovka)"
-        - "Volitelné zápisy (oprava zaúčtování, skladové pohyby) vyžadují samostatné povolení i potvrzení"
+        - "Volitelné zápisy (oprava zaúčtování, skladové pohyby) vyžadují samostatné povolení a standardně i potvrzení; firemní politika je může vynutit"
       permissions:
         - "Ve výchozím nastavení pouze čtení přes Flexi REST API"
         - "Vyžaduje přihlašovací údaje uživatele Flexi; heslo je uloženo write-only v trezoru"
       data_handling: "E-maily, telefony, adresy a bankovní spojení kontaktů se před odpovědí pseudonymizují jednosměrnými tokeny. IČ, DIČ a názvy firem zůstávají čitelné; jména osob lze volitelně také pseudonymizovat."
       example_query: "Ukaž mi vydané faktury za listopad a zkontroluj, na jaký výnosový účet jsou zaúčtované."
+      # POZOR: `hint` tu musí být u KAŽDÉHO pole, které ho má v `credentials`.
+      # API lokalizací hint bezpodmínečně přepíše (`catalog/localization.go`
+      # → `c.Fields[i].Hint = translated.Hint`), takže pole bez překladu
+      # zůstane v aktivačním UI úplně bez nápovědy. Hlídá tests/test_packaging.py.
       fields:
-        - { key: api_url, label: "URL Flexi serveru" }
+        - { key: api_url, label: "URL Flexi serveru", hint: "Adresa cloudové instance ABRA Flexi včetně portu, např. https://firma.flexibee.eu:5434" }
         - { key: company, label: "Firma v ABRA Flexi (kód z adresy)", hint: "V adrese Flexi najděte část za /c/. Například z …/c/moje_firma/ zadejte moje_firma." }
-        - { key: username, label: "Uživatelské jméno" }
-        - { key: password, label: "Heslo" }
+        - { key: username, label: "Uživatelské jméno", hint: "Přihlašovací jméno uživatele Flexi. Doporučujeme vyhrazeného API uživatele s právy podle zamýšleného použití (jen čtení, nebo čtení a zápis)." }
+        - { key: password, label: "Heslo", hint: "Heslo uživatele Flexi (ukládá se write-only do trezoru)" }
       tools:
         - { name: get_company_info, description: "Základní informace o firmě (účetní jednotce)" }
         - { name: list_issued_invoices, description: "Seznam vydaných faktur s filtry data a stavu úhrady" }
@@ -201,17 +209,17 @@ display:
       capabilities:
         - "Čítať vydané aj prijaté faktúry, ich zaúčtovanie a účtovný denník"
         - "Čítať banku, pokladňu, sklad, zmluvy, podklady DPH a účtovné reporty (hlavná kniha, predvaha, výsledovka)"
-        - "Voliteľné zápisy (oprava zaúčtovania, skladové pohyby) vyžadujú samostatné povolenie aj potvrdenie"
+        - "Voliteľné zápisy (oprava zaúčtovania, skladové pohyby) vyžadujú samostatné povolenie a štandardne aj potvrdenie; firemná politika ho môže vynútiť"
       permissions:
         - "V predvolenom nastavení iba čítanie cez Flexi REST API"
         - "Vyžaduje prihlasovacie údaje používateľa Flexi; heslo je uložené write-only v trezore"
       data_handling: "E-maily, telefóny, adresy a bankové spojenia kontaktov sa pred odpoveďou pseudonymizujú jednosmernými tokenmi. IČO, DIČ a názvy firiem zostávajú čitateľné; mená osôb možno voliteľne tiež pseudonymizovať."
       example_query: "Ukáž mi vydané faktúry za november a skontroluj, na aký výnosový účet sú zaúčtované."
       fields:
-        - { key: api_url, label: "URL Flexi servera" }
+        - { key: api_url, label: "URL Flexi servera", hint: "Adresa cloudovej inštancie ABRA Flexi vrátane portu, napr. https://firma.flexibee.eu:5434" }
         - { key: company, label: "Firma v ABRA Flexi (kód z adresy)", hint: "V adrese Flexi nájdite časť za /c/. Napríklad z …/c/moja_firma/ zadajte moja_firma." }
-        - { key: username, label: "Používateľské meno" }
-        - { key: password, label: "Heslo" }
+        - { key: username, label: "Používateľské meno", hint: "Prihlasovacie meno používateľa Flexi. Odporúčame vyhradeného API používateľa s právami podľa zamýšľaného použitia (len čítanie, alebo čítanie a zápis)." }
+        - { key: password, label: "Heslo", hint: "Heslo používateľa Flexi (ukladá sa write-only do trezoru)" }
       tools:
         - { name: get_company_info, description: "Základné informácie o firme (účtovnej jednotke)" }
         - { name: list_issued_invoices, description: "Zoznam vydaných faktúr s filtrami dátumu a stavu úhrady" }

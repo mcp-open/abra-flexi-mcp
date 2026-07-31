@@ -1,0 +1,12 @@
+# Externí runtime závislosti OpenMCP SDK a ABRA Flexi konektoru.
+# Lokální SDK/connector balíky se instalují bez dependency resolution.
+fastmcp>=3.2,<4
+httpx>=0.28,<0.29
+hvac>=2.3,<3
+packaging>=24,<27
+pydantic>=2.6,<3
+pyyaml==6.0.2
+setuptools>=68
+starlette>=1.3,<2
+uvicorn>=0.30,<1
+xmltodict>=0.13,<1

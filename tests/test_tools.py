@@ -12,6 +12,7 @@ from tests.conftest import CONFIG, WRITE_OK, ctx, winstrom_xml, xml_response
 
 from connector.server import (
     get_company_info,
+    get_invoice_journal,
     get_issued_invoice,
     get_stock_status,
     list_issued_invoices,
@@ -269,23 +270,39 @@ def test_products_name_filter_client_side(upstream):
 
 
 def test_conn_ok(upstream):
-    upstream(lambda request: xml_response(winstrom_xml("company", [{"id": "1"}])))
+    upstream(
+        lambda request: xml_response(
+            "<companies><company><dbNazev>demo</dbNazev>"
+            "<nazev>Demo firma</nazev></company></companies>"
+        )
+    )
     with ctx():
         assert connection_check() == "Spojení s ABRA Flexi funguje."
 
 
 def test_conn_missing_credentials():
+    """Chybějící heslo je věc aktivace, ne výpadek platformy.
+
+    `invalid_input` se od API PR #34 skládá na `runtime_unavailable`, takže
+    by uživatel dostal „platforma je rozbitá" místo „doplň heslo".
+    """
     with ctx(secrets={}), pytest.raises(ConnectorError) as excinfo:
         connection_check()
-    assert excinfo.value.code is ErrorCode.INVALID_INPUT
+    assert excinfo.value.code is ErrorCode.CREDENTIAL_INVALID
 
 
 @pytest.mark.parametrize(
     "status,code",
     [
-        (401, ErrorCode.INVALID_INPUT),
-        (403, ErrorCode.INVALID_INPUT),
-        (404, ErrorCode.INVALID_INPUT),
+        # 401 a 403 NEJSOU totéž: 401 = špatné jméno/heslo, 403 = přihlášení
+        # prošlo, ale uživatel nemá ve Flexi právo. Rada „zkontroluj heslo"
+        # je u 403 špatná. Control plane oba kódy rozlišuje.
+        (401, ErrorCode.CREDENTIAL_INVALID),
+        (403, ErrorCode.PROVIDER_PERMISSION_DENIED),
+        # 404 = firma s tímhle kódem na serveru není. Není to odmítnuté
+        # tajemství ani rozbitý runtime, a platforma to od API PR #34
+        # rozlišuje (`normalizeTestResponseCode`, migrace 00074).
+        (404, ErrorCode.INSTANCE_UNKNOWN),
         (500, ErrorCode.UPSTREAM_UNAVAILABLE),
     ],
 )
@@ -298,9 +315,165 @@ def test_conn_classifies_by_status(upstream, status, code):
 
 
 def test_conn_invalid_url(upstream):
-    upstream(lambda request: xml_response(WRITE_OK))
+    """Neplatná `api_url` je taky chyba aktivace — stejná třída jako heslo.
+
+    Chyby formátu a konfigurace vznikají všechny při STAVBĚ klienta, uvnitř
+    `_Session()`. Proto v klasifikaci odpovědi žádná větev na
+    `INVALID_INPUT` bez statusu nezbyla — nic takového se tam nedostane.
+    """
+    seen = upstream(lambda request: xml_response(WRITE_OK))
     with ctx(
         config={**CONFIG, "api_url": "http://demo.flexibee.eu:5434"}
     ), pytest.raises(ConnectorError) as excinfo:
         connection_check()
+    assert excinfo.value.code is ErrorCode.CREDENTIAL_INVALID
+    assert seen == [], "neplatná URL se nesmí dostat k requestu"
+
+
+def test_conn_rate_limit_is_not_reported_as_an_outage(upstream):
+    """429 znamená „zkus to za chvíli", ne „server je rozbitý".
+
+    Control plane pro to má `provider_rate_limited`; složit ho na
+    `provider_unavailable` posílá diagnostiku ke špatné příčině.
+    """
+    upstream(lambda request: httpx.Response(429, text="slow down"))
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is ErrorCode.RATE_LIMITED
+    assert "slow down" not in excinfo.value.message
+
+
+def test_conn_broken_vendor_protocol_is_runtime_not_credential(upstream):
+    """Odpověď, která není platné XML, NENÍ odmítnuté tajemství.
+
+    200 s chybovou stránkou proxy dřív skončilo jako `upstream_unavailable`.
+    Je to porušení protokolu — `internal`, které control plane složí na
+    `runtime_unavailable`, a hlavně nikdy `credential_invalid`: jinak by
+    janitor kvůli rozbité proxy označil platné přihlašovací údaje za neplatné.
+    """
+    upstream(lambda request: xml_response("<html><p>Bad Gateway"))
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is ErrorCode.INTERNAL
+    assert "Bad Gateway" not in excinfo.value.message
+
+
+def test_conn_does_not_retry_and_uses_a_short_budget(upstream):
+    """Safe test se musí vejít do rozpočtu hosted credential-testu (~12 s).
+
+    Výchozí klient má timeout 30 s a `READ_RETRY` se čtyřmi pokusy — jeden
+    nedostupný Flexi server tak umí běžet násobně déle, než control plane
+    čeká, a uživatel místo „server je nedostupný" dostane `outcome_unknown`.
+    """
+    seen = upstream(lambda request: httpx.Response(503, text="down"))
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is ErrorCode.UPSTREAM_UNAVAILABLE
+    assert len(seen) == 1, "credential test se nesmí opakovat"
+    assert seen[0].extensions["timeout"] == {
+        "connect": 3.0,
+        "read": 6.0,
+        "write": 6.0,
+        "pool": 6.0,
+    }
+
+
+def test_read_tools_keep_their_retry_budget(upstream):
+    """Krácení rozpočtu platí JEN pro safe test, ne pro běžné čtení."""
+    seen = upstream(lambda request: httpx.Response(503, text="down"))
+    with ctx(), pytest.raises(ConnectorError):
+        list_issued_invoices()
+    assert len(seen) == 4, "READ_RETRY má čtyři pokusy"
+    assert seen[0].extensions["timeout"]["read"] == 30.0
+
+
+def test_absurdly_long_numeric_id_is_rejected_not_crash(upstream):
+    """`int()` nad řetězcem >4300 číslic hodí ValueError (Python 3.11+).
+
+    `_RECORD_ID_RE` bez omezení délky ho pustila až do `int(ident)` v
+    `get_invoice_journal` — neošetřená výjimka z argumentu, který skládá model.
+    """
+    seen = upstream(lambda request: xml_response(winstrom_xml("ucetni-denik", [])))
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        get_invoice_journal("1" * 5000)
     assert excinfo.value.code is ErrorCode.INVALID_INPUT
+    assert seen == []
+
+
+# -- test spojení musí vidět skutečnou firmu -----------------------------------
+#
+# `/c/{firma}.xml` vrací podle dokumentace obálku `<companies>` se záznamem
+# `<company>` (§16.1). HTTP 200 s čímkoli jiným není důkaz spojení s Flexi.
+
+
+def test_conn_accepts_the_documented_companies_envelope(upstream):
+    """Legitimní odpověď — obálka `<companies>` s jedním `<company>`."""
+    upstream(
+        lambda request: xml_response(
+            '<?xml version="1.0"?><companies><company>'
+            "<dbNazev>demo</dbNazev><nazev>Demo firma</nazev>"
+            "<stavEnum>ESTABLISHED</stavEnum>"
+            "</company></companies>"
+        )
+    )
+    with ctx():
+        assert connection_check() == "Spojení s ABRA Flexi funguje."
+
+
+@pytest.mark.parametrize(
+    "body,label",
+    [
+        ("<html><body>captive portal</body></html>", "cizí dobře formované XHTML"),
+        ('<?xml version="1.0"?><companies></companies>', "prázdná obálka"),
+        ('<?xml version="1.0"?><winstrom version="1.0"/>', "winstrom bez firmy"),
+        ('<?xml version="1.0"?><neco><jine/></neco>', "úplně jiný kořen"),
+    ],
+)
+def test_conn_rejects_a_200_without_a_company_record(upstream, body, label):
+    """200 bez záznamu firmy nesmí projít jako úspěšný test.
+
+    Captive portál nebo proxy, která na 200 vrátí dobře formované XHTML,
+    dřív potvrdila i naprosto neplatnou aktivaci: `company_info()` v těle
+    obálku nenajde, `ConnectorError` z fallbacku si sám odchytí a vrátí `[]`.
+
+    Kód je `internal` (→ `runtime_unavailable`), NE `credential_invalid`:
+    o platnosti hesla to nic neříká a janitor nesmí kvůli rozbité proxy
+    označit funkční údaje za neplatné.
+    """
+    upstream(lambda request: xml_response(body))
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is ErrorCode.INTERNAL, label
+
+
+def test_conn_rejects_a_different_company_record(upstream):
+    """Platná obálka jiné databáze není důkaz aktivace požadované firmy."""
+    upstream(
+        lambda request: xml_response(
+            "<companies><company><dbNazev>jina_firma</dbNazev>"
+            "<nazev>Jiná firma</nazev></company></companies>"
+        )
+    )
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    assert excinfo.value.code is ErrorCode.INTERNAL
+    assert "jina_firma" not in excinfo.value.message
+
+
+def test_conn_404_advice_covers_licence_not_just_the_code(upstream):
+    """404 má podle dokumentace víc příčin než překlep v kódu firmy.
+
+    §3.3: „402 — není aktivní licence REST zápisu; u čtení může stejný stav
+    působit jako 404" a „404 — zdroj či záznam neexistuje, byl smazán, nebo
+    je z licenčních důvodů skryt." Rada jen „zkontroluj kód firmy" pošle
+    uživatele hledat překlep tam, kde je ve skutečnosti vypnutý REST přístup.
+    """
+    upstream(lambda request: httpx.Response(404, text="Not Found"))
+    with ctx(), pytest.raises(ConnectorError) as excinfo:
+        connection_check()
+    message = excinfo.value.message
+    assert "kód" in message, "rada musí pořád zmiňovat kód firmy"
+    assert "REST" in message and "licenci" in message, (
+        "rada musí zmínit i aktivaci přístupu přes REST API"
+    )
+    assert "Not Found" not in message

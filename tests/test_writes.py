@@ -45,6 +45,26 @@ INVOICE_DETAIL = winstrom_xml(
 )
 
 
+#: Skladový pohyb má položky ve `skladovePolozky` (asymetrie vůči zápisovému
+#: `polozkyDokladu`). Vlastní fixture proto, že testy pohybů dřív dostávaly
+#: z GETu detail FAKTURY — na nesouvisejícím tvaru se nedalo poznat, že se
+#: „původní hodnoty" nenačetly.
+MOVEMENT_DETAIL = winstrom_xml(
+    "skladovy-pohyb",
+    [
+        {
+            "id": "555",
+            "skladovePolozky": {
+                "skladovy-pohyb-polozka": [
+                    {"id": "77", "cenaMj": "99.5", "mnozMj": "3"},
+                    {"id": "78", "cenaMj": "10.0", "mnozMj": "1"},
+                ]
+            },
+        }
+    ],
+)
+
+
 def _write_upstream(upstream):
     """GET vrací detail faktury (diff), POST/PUT úspěch zápisu."""
     writes: list[httpx.Request] = []
@@ -164,7 +184,15 @@ async def test_update_stock_items_requires_a_change(upstream):
 
 
 async def test_update_stock_items_builds_rows(upstream):
-    _, writes = _write_upstream(upstream)
+    writes: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return xml_response(MOVEMENT_DETAIL)
+        writes.append(request)
+        return xml_response(WRITE_OK)
+
+    upstream(handler)
     with ctx(write=True):
         await update_stock_movement_items(
             "555",
@@ -265,3 +293,153 @@ async def test_result_id_from_attribute_form(upstream):
             items=[StockItemInput(product_code="X", quantity=1, unit_price=10)],
         )
     assert result["ids"] == ["777"]
+
+
+# -- integrita čísel na drátě --------------------------------------------------
+
+
+async def test_large_amount_never_uses_exponent(upstream):
+    """`Decimal` si exponent nese s sebou i po `to_integral_value()`.
+
+    `str(Decimal("1e16").to_integral_value())` je `"1E+16"` — takže dřívější
+    „celé číslo přes str()" pouštělo do účetnictví přesně ten exponenciální
+    tvar, kterému se `_number` vyhýbá. Hranice je kolem 1e16, kde `repr`
+    floatu sám přepne na exponent.
+    """
+    _, writes = _write_upstream(upstream)
+    with ctx(write=True):
+        await create_stock_movement(
+            document_type="PRIJEMKA",
+            movement_subtype="prijemHoly",
+            warehouse="SKLAD",
+            date="2026-01-31",
+            items=[StockItemInput(product_code="X", quantity=1e7, unit_price=1e16)],
+        )
+    body = writes[0].content.decode("utf-8")
+    assert "<mnozMj>10000000</mnozMj>" in body
+    assert "<cenaMj>10000000000000000</cenaMj>" in body
+    assert "E+" not in body and "e+" not in body
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_stock_item_rejects_non_finite_numbers(bad):
+    """`gt`/`ge` samy nestačí: `inf > 0` je True.
+
+    Bez `allow_inf_nan=False` by `+inf` prošlo validací a `_number` z něj
+    udělá řetězec `Infinity` — poškozený zápis do cizího účetnictví.
+    """
+    with pytest.raises(ValueError):
+        StockItemInput(product_code="X", quantity=bad, unit_price=1.0)
+    with pytest.raises(ValueError):
+        StockItemInput(product_code="X", quantity=1.0, unit_price=bad)
+    with pytest.raises(ValueError):
+        StockItemPriceInput(item_id="1", unit_price=bad)
+    with pytest.raises(ValueError):
+        StockItemPriceInput(item_id="1", quantity=bad)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_number_formatter_is_the_last_barrier(bad):
+    """Druhá vrstva: `_number` odmítne nekonečno i mimo pydantic schémata."""
+    with pytest.raises(ConnectorError) as excinfo:
+        server._number(bad)
+    assert excinfo.value.code is ErrorCode.INVALID_INPUT
+
+
+# -- potvrzení nesmí ukazovat vymyšlený diff -----------------------------------
+
+
+async def test_write_to_missing_item_is_refused(upstream):
+    """Položka, která na faktuře není, se nedá „opravit".
+
+    Dřív `fetch_item` vrátila `{}`, člověk uviděl `'—' → 'code:604005'` —
+    diff k něčemu, co neexistuje — a PUT s cizím `id` odešel.
+    """
+    _, writes = _write_upstream(upstream)
+    with (
+        elicitation("accept"),
+        ctx(write=True, confirm=True),
+        pytest.raises(ConnectorError) as excinfo,
+    ):
+        await update_invoice_item("16792", "999999", revenue_account="604005")
+    assert excinfo.value.code is ErrorCode.UPSTREAM_UNAVAILABLE
+    assert writes == []
+
+
+async def test_write_to_missing_record_is_refused(upstream):
+    """Neexistující doklad — stejný fail-closed jako u položky."""
+    writes: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return xml_response(winstrom_xml("faktura-vydana", []))
+        writes.append(request)
+        return xml_response(WRITE_OK)
+
+    upstream(handler)
+    with (
+        elicitation("accept"),
+        ctx(write=True, confirm=True),
+        pytest.raises(ConnectorError),
+    ):
+        await update_invoice_header("999999", revenue_account="604005")
+    assert writes == []
+
+
+async def test_write_to_missing_record_is_refused_without_confirmation(upstream):
+    """Vypnutí elicitation nesmí změnit neexistující ID na povolený PUT."""
+    writes: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return xml_response(winstrom_xml("faktura-vydana", []))
+        writes.append(request)
+        return xml_response(WRITE_OK)
+
+    upstream(handler)
+    with ctx(write=True, confirm=False), pytest.raises(ConnectorError) as excinfo:
+        await update_invoice_header("999999", revenue_account="604005")
+    assert excinfo.value.code is ErrorCode.INVALID_INPUT
+    assert writes == []
+
+
+async def test_stock_item_update_refuses_ids_not_on_the_movement(upstream):
+    """Ceny se nedají přepsat položkám, které na tomhle pohybu nejsou."""
+    writes: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return xml_response(MOVEMENT_DETAIL)
+        writes.append(request)
+        return xml_response(WRITE_OK)
+
+    upstream(handler)
+    with (
+        elicitation("accept"),
+        ctx(write=True, confirm=True),
+        pytest.raises(ConnectorError),
+    ):
+        await update_stock_movement_items(
+            "555", items=[StockItemPriceInput(item_id="424242", unit_price=42.0)]
+        )
+    assert writes == []
+
+
+async def test_stock_item_update_shows_the_real_diff(upstream):
+    """Protějšek předchozího testu — existující položka projde s pravdivým diffem."""
+    writes: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return xml_response(MOVEMENT_DETAIL)
+        writes.append(request)
+        return xml_response(WRITE_OK)
+
+    upstream(handler)
+    with elicitation("accept") as fake, ctx(write=True, confirm=True):
+        await update_stock_movement_items(
+            "555", items=[StockItemPriceInput(item_id="77", unit_price=42.0)]
+        )
+    assert len(writes) == 1
+    # Původní cena z pohybu, ne vymyšlená pomlčka.
+    assert "99.5" in fake.messages[0]

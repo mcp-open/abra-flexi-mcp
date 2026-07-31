@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abraflexi-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP konektor pro ABRA Flexi (FlexiBee) — účetnictví, faktury, sklad."
 requires-python = ">=3.12"
 # openmcp-sdk se nepublikuje na PyPI — jméno tam patří nesouvisejícímu
@@ -12,12 +12,14 @@ requires-python = ">=3.12"
 # selhal a po vydání cizí 0.4.x by nainstaloval cizí kód. Reference míří na
 # commit z `.sdk-ref`; shodu hlídá `tests/test_sdk_pin.py`.
 #
-# POZOR: tenhle konektor je jako jediný v rodině pořád na SDK 0.4.1
-# a FastMCP 2.x. Commit níže žije ve větvi `codex/abraflexi-safe-redirect-20260726`,
-# ne v `main` SDK — přechod na 0.4.2 znamená zároveň FastMCP 2 → 3.
+# Pin je od 31. 7. 2026 zpátky na `main` SDK (0.4.3, FastMCP 3) — dosavadní
+# commit žil ve větvi `codex/abraflexi-safe-redirect-20260726` a nikdy se
+# nesmergoval. Zpřísnění přesměrování z té větve je v `main` od PR #8
+# (`0d36cf1`), takže konektor už si ho nemusí držet sám; hlídá ho
+# `tests/test_redirects.py`.
 dependencies = [
-  "openmcp-sdk @ git+https://github.com/mcp-open/openmcp-sdk@35f15e2dbd1e28c220a915ba32d682f525393543",
-  "fastmcp>=2.11,<3",
+  "openmcp-sdk @ git+https://github.com/mcp-open/openmcp-sdk@0d36cf1a93c870fe237ecbe3bee7b52b202df18d",
+  "fastmcp>=3.2,<4",
   "pydantic>=2.6,<3",
   "httpx>=0.28,<0.29",
   "xmltodict>=0.13,<1",
@@ -27,10 +29,11 @@ dependencies = [
 # spuštění celé sady lokálně i v CI (bez ad-hoc instalace v run kroku).
 [project.optional-dependencies]
 test = [
-  "pytest==8.4.2",
+  "pytest==9.0.3",
   "anyio>=4,<6",
   "ruff>=0.6,<1",
   "mypy>=1.11,<2",
+  "types-xmltodict>=0.13,<1",
 ]
 
 [tool.setuptools.packages.find]
@@ -53,9 +56,3 @@ python_version = "3.12"
 strict = true
 mypy_path = "src"
 packages = ["connector"]
-
-# xmltodict nemá typové stuby a je to úzké, dobře ohraničené API — přetypované
-# v našem `xml_codec`.
-[[tool.mypy.overrides]]
-module = "xmltodict"
-ignore_missing_imports = true

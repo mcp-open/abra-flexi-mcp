@@ -14,6 +14,7 @@ ne volající.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
@@ -21,6 +22,7 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from openmcp_sdk import current_context
 from openmcp_sdk.envelope import ConnectorError, ErrorCode, Provenance, now_utc_iso
+from openmcp_sdk.http import NO_RETRY
 from openmcp_sdk.pii import Pseudonymizer, pseudonymizer_for_request
 from openmcp_sdk.tools import tool
 from openmcp_sdk.write import WriteBudget, WriteTarget, build_payload, execute_write
@@ -85,7 +87,7 @@ class _Session:
     sdílený klient by míchal identity.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, **client_options: Any) -> None:
         ctx = current_context()
         api_url = str(ctx.config.get("api_url") or "")
         company = str(ctx.config.get("company") or "")
@@ -96,7 +98,8 @@ class _Session:
                 ErrorCode.FORBIDDEN,
                 "chybí přihlašovací údaje Flexi — zkontroluj aktivaci konektoru",
             )
-        self.client = Client(api_url, company, username, password)
+        self.company = company
+        self.client = Client(api_url, company, username, password, **client_options)
         self.pii: Pseudonymizer | None = pseudonymizer_for_request(POLICY, ctx)
 
     def sanitize(self, data: Any) -> Any:
@@ -961,8 +964,11 @@ _write_budget = WriteBudget(limit=_WRITE_LIMIT, window_s=_WRITE_WINDOW_S)
 
 
 #: ASCII číslice — `str.isdigit()` propouští i unicode číslice (`"١٢٣"`),
-#: které Flexi jako ID nezná.
-_RECORD_ID_RE = re.compile(r"[0-9]+")
+#: které Flexi jako ID nezná. Délka je omezená na 19 číslic (int64 Flexi):
+#: neomezené `[0-9]+` pustilo dál řetězec, na kterém `int()` v Pythonu 3.11+
+#: hodí `ValueError: Exceeds the limit (4300 digits)` — neošetřenou výjimku
+#: z argumentu, který skládá model (`get_invoice_journal`).
+_RECORD_ID_RE = re.compile(r"[0-9]{1,19}")
 
 
 def _require_record_id(value: str, label: str) -> str:
@@ -980,11 +986,24 @@ def _number(value: float) -> str:
     Přes ``Decimal``, ne ``{:g}`` — `g` má 6 platných cifer a nad ně přepíná
     na exponenciální tvar: cena ``1234567.89`` by odešla jako ``1.23457e+06``,
     tedy poškozená data v cizím účetnictví.
+
+    Formátuje se VŽDY přes ``format(…, "f")``, i celá čísla. ``Decimal``
+    exponent nese s sebou a ``to_integral_value()`` ho zachovává, takže
+    ``str(Decimal("1e16").to_integral_value())`` je ``"1E+16"`` — přesně ten
+    exponenciální tvar, kterému se tahle funkce vyhýbá.
+
+    Nekonečno a NaN se odmítají TADY, i když je schémata (`allow_inf_nan=False`)
+    nepustí dál — tohle je poslední místo před drátem a ``format(Decimal("inf"),
+    "f")`` vyrobí řetězec ``Infinity``, tedy poškozený zápis do cizího
+    účetnictví. Dvě vrstvy proto, že sem vede i cesta z filtrů (`_literal`).
     """
+    if not math.isfinite(value):
+        raise ConnectorError(
+            ErrorCode.INVALID_INPUT, "číselná hodnota musí být konečná"
+        )
     decimal = Decimal(str(value))
-    if decimal == decimal.to_integral_value():
-        return str(decimal.to_integral_value())
-    return format(decimal, "f")
+    integral = decimal.to_integral_value()
+    return format(integral if decimal == integral else decimal, "f")
 
 
 def _result_ids(parsed: dict[str, Any]) -> list[str]:
@@ -1009,6 +1028,26 @@ def _result_ids(parsed: dict[str, Any]) -> list[str]:
     return ids
 
 
+class _MissingTargetError(ConnectorError):
+    """Neexistující cíl zápisu, který se nesmí ignorovat ani bez elicitation."""
+
+
+def _missing_target(what: str) -> _MissingTargetError:
+    """Cíl zápisu neexistuje — diff by byl vymyšlený, tak zápis nepustíme.
+
+    Prázdný výsledek čtení „před" NENÍ totéž co nenalezený záznam: faktura
+    bez vyplněného ``popis`` legitimně vrátí prázdný diff. Rozlišuje se proto
+    NEEXISTENCE cíle (žádný záznam / položka s tímhle ``id``), ne prázdnota
+    hodnot — jinak by šlo potvrzení obejít volbou nevyplněných polí.
+
+    ``execute_write`` od SDK 0.4.3 výjimku z ``fetch_before`` při zapnutém
+    potvrzení propustí ven. Při vypnutém potvrzení ji ale kvůli dostupnosti
+    diffu ignoruje, proto ``_write`` nese tenhle konkrétní typ až do
+    ``apply`` a zastaví zápis i tam. Bez toho by PUT odešel na cizí ``id``.
+    """
+    return _MissingTargetError(ErrorCode.INVALID_INPUT, f"{what} — zápis neproběhl")
+
+
 def _current_values(
     session: _Session, evidence: str, record_id: str, fields: Any
 ) -> dict[str, Any]:
@@ -1018,7 +1057,7 @@ def _current_values(
     )
     rows = session.client.unwrap(payload, evidence)
     if not rows:
-        return {}
+        raise _missing_target(f"záznam {record_id} v evidenci {evidence} neexistuje")
     return {k: rows[0].get(k) for k in fields if k in rows[0]}
 
 
@@ -1041,17 +1080,29 @@ async def _write(
     """
     with _Session() as session:
         captured_before: dict[str, Any] = {}
+        missing_target: _MissingTargetError | None = None
 
         def fetch_before(target: WriteTarget, fields: Any) -> dict[str, Any]:
-            if fetch_current is not None:
-                captured_before.update(fetch_current(session, fields))
-            else:
-                captured_before.update(
-                    _current_values(session, evidence, str(record_id), fields)
-                )
+            nonlocal missing_target
+            try:
+                if fetch_current is not None:
+                    captured_before.update(fetch_current(session, fields))
+                else:
+                    captured_before.update(
+                        _current_values(session, evidence, str(record_id), fields)
+                    )
+            except _MissingTargetError as exc:
+                # Bez potvrzení SDK běžnou chybu načtení diffu záměrně
+                # ignoruje a pokračuje do `apply`. Neexistující cíl ale není
+                # jen chybějící diff: zápis na cizí ID se nesmí vykonat v
+                # žádném režimu. Stav si proto neseme až do apply.
+                missing_target = exc
+                raise
             return captured_before
 
         def apply(body: Any) -> dict[str, Any]:
+            if missing_target is not None:
+                raise missing_target
             flexi_body: dict[str, Any] = wrap(dict(body)) if wrap else dict(body)
             if record_id is not None:
                 flexi_body.setdefault("id", record_id)
@@ -1198,7 +1249,7 @@ async def update_invoice_item(
         for entry in entries if isinstance(entries, list) else []:
             if isinstance(entry, dict) and str(entry.get("id")) == item:
                 return {k: entry.get(k) for k in fields if k in entry}
-        return {}
+        raise _missing_target(f"položka {item} na faktuře {record} není")
 
     return await _write(
         "update_invoice_item",
@@ -1293,6 +1344,10 @@ async def update_stock_movement_items(
             for item in (entries if isinstance(entries, list) else [])
             if isinstance(item, dict) and str(item.get("id")) in wanted_ids
         ]
+        if missing := sorted(wanted_ids - {str(row.get("id")) for row in before}):
+            raise _missing_target(
+                f"na pohybu {record} nejsou položky {', '.join(missing)}"
+            )
         return {"polozkyDokladu": before}
 
     return await _write(
@@ -1305,6 +1360,15 @@ async def update_stock_movement_items(
 
 
 # -- test spojení --------------------------------------------------------------
+
+#: Rozpočet hosted ``/internal/credential-test`` je ~12 s. Výchozí klient
+#: (timeout 30 s, ``READ_RETRY`` se čtyřmi pokusy) ho umí přetáhnout
+#: několikanásobně — control plane mezitím request utne a uživatel místo
+#: „server je nedostupný" uvidí `outcome_unknown`. Safe test proto dostává
+#: vlastní krátký rozpočet a JEDEN pokus. Běžné čtecí nástroje si retry
+#: ponechávají: tam je latence levnější než zbytečné selhání.
+_TEST_TIMEOUT_S = 6.0
+_TEST_CONNECT_TIMEOUT_S = 3.0
 
 
 def test_connection() -> str:
@@ -1319,32 +1383,104 @@ def test_connection() -> str:
     Syrové vendor tělo se nikdy nevrací do API ani logu.
     """
     try:
-        session = _Session()
+        session = _Session(
+            timeout=_TEST_TIMEOUT_S,
+            connect_timeout=_TEST_CONNECT_TIMEOUT_S,
+            retry=NO_RETRY,
+        )
     except (ConnectorError, KeyError) as exc:
+        # Sem spadne chybějící heslo i neplatná `api_url`/`company` — tedy
+        # něco, co opraví uživatel v aktivaci, ne provoz. `INVALID_INPUT` se
+        # od API PR #34 skládá na `runtime_unavailable` („platforma je
+        # rozbitá"), což je špatná rada; `credential_invalid` vede na akci
+        # `set_access`.
         raise ConnectorError(
-            ErrorCode.INVALID_INPUT,
+            ErrorCode.CREDENTIAL_INVALID,
             "Chybí nebo jsou neplatné údaje připojení k ABRA Flexi.",
         ) from exc
 
     try:
-        session.client.company_info()
+        companies = session.client.company_info()
     except ConnectorError as exc:
-        if exc.status in (401, 403):
+        # 401 a 403 NEJSOU totéž. 401 = Flexi neuznala jméno/heslo. 403 =
+        # přihlášení prošlo, ale uživatel na firmu nebo evidenci nemá právo —
+        # měnit heslo je tam špatná rada, správná je upravit roli ve Flexi.
+        # Control plane obojí rozlišuje (`credential_invalid` vs
+        # `provider_permission_denied`, viz `credentialversion/tester.go`).
+        if exc.status == 401:
             raise ConnectorError(
-                ErrorCode.INVALID_INPUT,
+                ErrorCode.CREDENTIAL_INVALID,
                 "Flexi odmítla přihlášení — zkontroluj uživatele a heslo.",
             ) from exc
-        if exc.status == 404:
+        if exc.status == 403:
             raise ConnectorError(
-                ErrorCode.INVALID_INPUT,
-                "Firma s tímto kódem na serveru není — zkontroluj kód firmy.",
+                ErrorCode.PROVIDER_PERMISSION_DENIED,
+                "Uživatel se přihlásil, ale nemá ve Flexi právo na tuto firmu "
+                "— zkontroluj jeho role a přístup k firmě.",
             ) from exc
-        if exc.status is None and exc.code is ErrorCode.INVALID_INPUT:
-            raise
+        if exc.status == 404:
+            # 404 NENÍ odmítnuté tajemství: heslo projde, nedosáhneme na
+            # firmu. Příčiny jsou podle dokumentace dvě a zvenčí je nerozlišíme
+            # — zdroj neexistuje, NEBO je skrytý z licenčních důvodů; navíc
+            # „402 (neaktivní REST licence) u čtení může působit jako 404"
+            # (§3.3). Rada proto míří na obojí, ne jen na překlep v kódu firmy.
+            #
+            # Control plane `instance_unknown` zná od API PR #34
+            # (`normalizeTestResponseCode`, migrace 00074) a webapp ho vede na
+            # akci `set_access` stejně jako `credential_invalid`.
+            # `INVALID_INPUT` by tu bylo horší než dřív: od stejného PR se
+            # skládá na `runtime_unavailable`, tedy „platforma je rozbitá".
+            raise ConnectorError(
+                ErrorCode.INSTANCE_UNKNOWN,
+                "K firmě s tímto kódem se nedá přistoupit — zkontroluj kód "
+                "firmy a také to, že má instance aktivovaný přístup přes REST "
+                "API (licenci).",
+            ) from exc
+        if exc.status == 429:
+            # Rate limit není výpadek. `provider_rate_limited` říká „zkus to
+            # znovu", kdežto `provider_unavailable` vede diagnostiku k serveru.
+            raise ConnectorError(
+                ErrorCode.RATE_LIMITED,
+                "ABRA Flexi teď odmítá požadavky kvůli limitu — zkus to za chvíli.",
+            ) from exc
+        if exc.code is ErrorCode.INTERNAL:
+            # Odpověď, která není platné XML, nebo chybějící `winstrom` obálka.
+            # To je porušení protokolu na naší straně kontraktu, ne odmítnuté
+            # tajemství — `runtime_unavailable`, nikdy `credential_invalid`.
+            raise ConnectorError(
+                ErrorCode.INTERNAL,
+                "Odpověď ABRA Flexi se nepodařilo zpracovat.",
+            ) from exc
+        # ZDE BÝVALA větev `status is None and code is INVALID_INPUT`, která
+        # měla propustit chybu formátu/konfigurace. Byla mrtvá: všechny takové
+        # chyby (`_validated_api_url`, kontroly `base_url` v `UpstreamClient`,
+        # `seg()` nad `company`) vznikají při STAVBĚ klienta, tedy uvnitř
+        # `_Session()` — a ty chytá `except` výše. Z `company_info()` přijde
+        # `INVALID_INPUT` už jen se `status` (400/404/409/410/422).
         raise ConnectorError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
             "Server ABRA Flexi je nedostupný, zkus to prosím později.",
         ) from exc
     finally:
         session.client.close()
+
+    expected_company = session.company.casefold()
+    if not companies or not any(
+        str(company.get("dbNazev") or "").casefold() == expected_company
+        for company in companies
+    ):
+        # Fail-closed: HTTP 200 sám o sobě není důkaz spojení s Flexi.
+        # `/c/{firma}.xml` vrací podle dokumentace obálku `<companies>` se
+        # záznamem `<company>` a jeho `dbNazev` je identifikátor firmy
+        # (§16.1). Aktivace míří na konkrétní firmu, takže prázdný seznam ani
+        # platný záznam jiné databáze nejsou legitimní odpověď.
+        #
+        # Bez téhle kontroly potvrdil test spojení i captive portál, který na
+        # 200 vrátí dobře formované XHTML: `company_info()` v něm obálku
+        # nenajde, `ConnectorError` z fallbacku si sám odchytí a vrátí `[]`.
+        raise ConnectorError(
+            ErrorCode.INTERNAL,
+            "Odpověď ABRA Flexi neobsahuje údaje o aktivované firmě — "
+            "zkontroluj adresu serveru a kód firmy.",
+        )
     return "Spojení s ABRA Flexi funguje."

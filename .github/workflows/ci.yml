@@ -1,97 +1,286 @@
+# Exact source/lock test -> immutable candidate gate -> optional platform record.
 name: CI
 
 on:
-  push: { branches: [dev] }
-  pull_request: { branches: [dev] }
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   SLUG: abraflexi
 
-concurrency: { group: "ci-${{ github.repository }}", cancel-in-progress: false }
+concurrency:
+  group: "ci-${{ github.repository }}-${{ github.event_name }}-${{ github.ref }}"
+  cancel-in-progress: false
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with: { path: "${{ env.SLUG }}" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: "${{ env.SLUG }}"
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: { python-version: "3.13.9" }
+
       - id: sdkref
-        run: echo "ref=$(tr -d '[:space:]' < "${SLUG}/.sdk-ref")" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+        name: Read exact SDK revision
+        run: |
+          set -eu
+          ref=$(tr -d '[:space:]' < "${SLUG}/.sdk-ref")
+          printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' || {
+            echo "::error::.sdk-ref is not an exact commit SHA"
+            exit 1
+          }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      # Public repository: the default read-only GitHub token is sufficient.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: mcp-open/openmcp-sdk
-          token: ${{ secrets.OPENMCP_CI_TOKEN }}
-          ref: ${{ steps.sdkref.outputs.ref }}
+          ref: "${{ steps.sdkref.outputs.ref }}"
           path: sdk
-      - name: Lint, typecheck, manifest and tests
+          persist-credentials: false
+
+      - name: Install locked environment and test exact source
         run: |
-          docker run --rm -v "$PWD":/src -w /src python:3.13-slim sh -c '
-            set -eu
-            pip install -q --no-cache-dir ./sdk "./'"$SLUG"'[test]"
-            ruff check '"$SLUG"'/src '"$SLUG"'/tests
-            mypy '"$SLUG"'/src
-            (cd '"$SLUG"' && openmcp-sdk validate connector.yaml)
-            python -m pytest '"$SLUG"'/tests -q
-          '
+          set -eu
+          python -m pip install -q --disable-pip-version-check \
+            --only-binary=:all: --require-hashes \
+            -r "${SLUG}/release/python-requirements.lock"
+          python -m pip install -q --disable-pip-version-check \
+            --no-deps --no-build-isolation ./sdk "./${SLUG}"
+          python -m pip check
+          python -m ruff check "${SLUG}/src" "${SLUG}/tests"
+          python -m mypy "${SLUG}/src"
+          (cd "$SLUG" && openmcp-sdk validate connector.yaml)
+          (cd "$SLUG" && python -m pytest tests -q)
 
   build:
     needs: test
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
-    outputs: { digest: "${{ steps.digest.outputs.digest }}" }
+    timeout-minutes: 45
+    env:
+      SOURCE_DIR: abraflexi-source-${{ github.run_id }}-${{ github.run_attempt }}
+      SDK_DIR: sdk-source-${{ github.run_id }}-${{ github.run_attempt }}
+    outputs:
+      digest: "${{ steps.digest.outputs.digest }}"
     steps:
-      - uses: actions/checkout@v4
-        with: { path: "${{ env.SLUG }}" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: "${{ env.SOURCE_DIR }}"
+          persist-credentials: false
+
       - id: sdkref
-        run: echo "ref=$(tr -d '[:space:]' < "${SLUG}/.sdk-ref")" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+        name: Read exact SDK revision
+        run: |
+          set -eu
+          ref=$(tr -d '[:space:]' < "${SOURCE_DIR}/.sdk-ref")
+          printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' || {
+            echo "::error::.sdk-ref is not an exact commit SHA"
+            exit 1
+          }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: mcp-open/openmcp-sdk
-          token: ${{ secrets.OPENMCP_CI_TOKEN }}
-          ref: ${{ steps.sdkref.outputs.ref }}
-          path: sdk
-      - name: Build and push immutable image
+          ref: "${{ steps.sdkref.outputs.ref }}"
+          path: "${{ env.SDK_DIR }}"
+          persist-credentials: false
+
+      - name: Prepare isolated build context
+        id: context
         run: |
+          set -eu
+          build_context="${RUNNER_TEMP}/openmcp-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$build_context/${SLUG}" "$build_context/sdk"
+          git -C "${SOURCE_DIR}" archive HEAD | tar -x -C "$build_context/${SLUG}"
+          git -C "${SDK_DIR}" archive HEAD | tar -x -C "$build_context/sdk"
+          cp "${SOURCE_DIR}/.dockerignore" "$build_context/.dockerignore"
+          echo "path=$build_context" >> "$GITHUB_OUTPUT"
+
+      - name: Build candidate
+        run: |
+          set -eu
           SHA=${GITHUB_SHA::7}
           IMG=localhost:30500/openmcp/mcp-${SLUG}
-          docker build -q -f "${SLUG}/Dockerfile" -t "$IMG:dev" -t "$IMG:$SHA" .
-          docker push -q "$IMG:$SHA"
-          docker push -q "$IMG:dev"
+          docker build -q \
+            -f "${{ steps.context.outputs.path }}/${SLUG}/Dockerfile" \
+            -t "$IMG:$SHA" "${{ steps.context.outputs.path }}"
+
+      - name: Scan candidate
+        run: |
+          set -eu
+          SHA=${GITHUB_SHA::7}
+          IMG=localhost:30500/openmcp/mcp-${SLUG}
+          trivy image --scanners vuln,secret --severity HIGH,CRITICAL \
+            --exit-code 1 "$IMG:$SHA"
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          set -eu
+          SHA=${GITHUB_SHA::7}
+          IMG=localhost:30500/openmcp/mcp-${SLUG}
+          SBOM="${RUNNER_TEMP}/mcp-${SLUG}-${GITHUB_SHA}.cdx.json"
+          trivy image --format cyclonedx --output "$SBOM" "$IMG:$SHA"
+          test -s "$SBOM"
+          echo "SBOM=$SBOM" >> "$GITHUB_ENV"
+
+      - name: Upload CycloneDX SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: "mcp-${{ env.SLUG }}-${{ github.sha }}-sbom"
+          path: "${{ env.SBOM }}"
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Smoke test image
         run: |
+          set -eu
+          SHA=${GITHUB_SHA::7}
+          IMG=localhost:30500/openmcp/mcp-${SLUG}
+          SMOKE="smoke-${SLUG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          NEG_SMOKE="smoke-${SLUG}-missing-salt-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           TOKEN=$(head -c 48 /dev/urandom | base64 | tr -d '\n')
-          cleanup() { docker rm -f "smoke-${SLUG}" >/dev/null 2>&1 || true; }
+          cleanup() {
+            docker rm -f "$SMOKE" "$NEG_SMOKE" >/dev/null 2>&1 || true
+          }
           trap cleanup EXIT
-          docker run -d --name "smoke-${SLUG}" -p 18004:8000 \
+          docker run -d --name "$SMOKE" -p 127.0.0.1::8000 \
             -e OPENMCP_MODE=hosted \
             -e OPENMCP_INTERNAL_TOKEN="$TOKEN" \
             -e OPENMCP_PII_SALT=ci-smoke \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
             -e ABRAFLEXI_READ_ONLY=true \
-            "localhost:30500/openmcp/mcp-${SLUG}:dev"
+            "$IMG:$SHA"
+          PORT=$(docker port "$SMOKE" 8000/tcp | sed 's/.*://')
           for _ in $(seq 30); do
-            curl -sf localhost:18004/healthz && exit 0
-            sleep 1
+            curl -sf "127.0.0.1:$PORT/healthz" && break || sleep 1
           done
-          docker logs "smoke-${SLUG}"
-          exit 1
-      - id: digest
+          curl -sf "127.0.0.1:$PORT/healthz" >/dev/null || {
+            docker logs "$SMOKE"; exit 1;
+          }
+          missing=$(curl -sS -o "${RUNNER_TEMP}/missing-token.json" -w '%{http_code}' \
+            -X POST -H 'content-type: application/json' \
+            -H 'X-OpenMCP-Sub: ci-user' --data '{}' \
+            "127.0.0.1:$PORT/mcp")
+          forged=$(curl -sS -o "${RUNNER_TEMP}/forged-token.json" -w '%{http_code}' \
+            -X POST -H 'content-type: application/json' \
+            -H 'X-OpenMCP-Sub: ci-user' \
+            -H 'X-OpenMCP-Gateway-Token: forged-ci-token-that-cannot-match' \
+            --data '{}' "127.0.0.1:$PORT/mcp")
+          test "$missing" = 403
+          test "$forged" = 403
+
+          # Manifest požaduje stabilní PII salt. Kandidát bez něj musí skončit
+          # nenulově a explicitně uvést bezpečný konfigurační důvod.
+          set +e
+          timeout 60 docker run --name "$NEG_SMOKE" \
+            -e OPENMCP_MODE=hosted \
+            -e OPENMCP_INTERNAL_TOKEN="$TOKEN" \
+            -e VAULT_ADDR=http://127.0.0.1:8200 \
+            -e ABRAFLEXI_READ_ONLY=true \
+            "$IMG:$SHA" >"${RUNNER_TEMP}/missing-salt.stdout" 2>"${RUNNER_TEMP}/missing-salt.stderr"
+          negative_rc=$?
+          set -e
+          test "$negative_rc" -ne 0
+          test "$negative_rc" -ne 124
+          docker logs "$NEG_SMOKE" >"${RUNNER_TEMP}/missing-salt.log" 2>&1
+          grep -F 'OPENMCP_PII_SALT' "${RUNNER_TEMP}/missing-salt.log" >/dev/null
+
+      - name: Push verified image
         run: |
+          set -eu
+          SHA=${GITHUB_SHA::7}
+          IMG=localhost:30500/openmcp/mcp-${SLUG}
+          docker tag "$IMG:$SHA" "$IMG:dev"
+          docker push -q "$IMG:$SHA"
+          docker push -q "$IMG:dev"
+
+      - id: digest
+        name: Record immutable digest
+        run: |
+          set -eu
           D=$(docker inspect --format='{{index .RepoDigests 0}}' \
-                "localhost:30500/openmcp/mcp-${SLUG}:dev")
+            "localhost:30500/openmcp/mcp-${SLUG}:dev")
+          case "${D#*@}" in sha256:*) ;; *) exit 1 ;; esac
           echo "digest=${D#*@}" >> "$GITHUB_OUTPUT"
-          echo "**mcp-${SLUG}**: \`${D#*@}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "mcp-${SLUG}: ${D#*@}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean run-scoped self-hosted paths
+        if: always()
+        run: |
+          set -eu
+          expected_source="abraflexi-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expected_sdk="sdk-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$SOURCE_DIR" = "$expected_source"
+          test "$SDK_DIR" = "$expected_sdk"
+          test -n "$GITHUB_WORKSPACE"
+          test "$GITHUB_WORKSPACE" != /
+          test -n "$RUNNER_TEMP"
+          test "$RUNNER_TEMP" != /
+          source_target="${GITHUB_WORKSPACE}/${SOURCE_DIR}"
+          sdk_target="${GITHUB_WORKSPACE}/${SDK_DIR}"
+          context_target="${RUNNER_TEMP}/openmcp-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$source_target" = "${GITHUB_WORKSPACE}/${expected_source}"
+          test "$sdk_target" = "${GITHUB_WORKSPACE}/${expected_sdk}"
+          test "$context_target" = "${RUNNER_TEMP}/openmcp-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf -- "$source_target" "$sdk_target" "$context_target"
 
   record:
     needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
+    timeout-minutes: 15
     steps:
-      - name: Record candidate digest in platform repository
+      - id: gate
+        name: Check dispatch authorisation
+        env:
+          OPENMCP_CI_TOKEN: "${{ secrets.OPENMCP_CI_TOKEN }}"
         run: |
-          curl -sf -X POST \
-            -H "Authorization: token ${{ secrets.OPENMCP_CI_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/mcp-open/platforma/dispatches \
-            -d "{\"event_type\":\"component-built\",\"client_payload\":{\"component\":\"mcp-${SLUG}\",\"digest\":\"${{ needs.build.outputs.digest }}\"}}"
+          if [ -n "$OPENMCP_CI_TOKEN" ]; then
+            echo "authorized=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      - name: Record candidate digest in platform repository
+        if: steps.gate.outputs.authorized == 'true'
+        env:
+          OPENMCP_CI_TOKEN: "${{ secrets.OPENMCP_CI_TOKEN }}"
+          DIGEST: "${{ needs.build.outputs.digest }}"
+        run: |
+          set -eu
+          case "$DIGEST" in sha256:*) ;; *) exit 1 ;; esac
+          code=$(curl -sS -o "${RUNNER_TEMP}/platform-dispatch.json" -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${OPENMCP_CI_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/mcp-open/platforma/dispatches \
+            -d "{\"event_type\":\"component-built\",\"client_payload\":{\"component\":\"mcp-${SLUG}\",\"digest\":\"${DIGEST}\"}}")
+          test "$code" = 204
+          echo "component-built dispatch sent for mcp-${SLUG}: ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report skipped dispatch
+        if: steps.gate.outputs.authorized != 'true'
+        env:
+          DIGEST: "${{ needs.build.outputs.digest }}"
+        run: |
+          echo "::warning::OPENMCP_CI_TOKEN is unavailable; component-built dispatch was NOT sent."
+          {
+            echo '### Platform dispatch was NOT sent'
+            echo ''
+            echo 'OPENMCP_CI_TOKEN is unavailable. The verified image exists, but platforma'
+            echo 'requires one manual authorised component-built dispatch.'
+            echo ''
+            echo "- component: mcp-${SLUG}"
+            echo "- digest: ${DIGEST}"
+          } >> "$GITHUB_STEP_SUMMARY"

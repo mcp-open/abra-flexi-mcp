@@ -11,9 +11,8 @@ pip install -e '.[test]'
 export OPENMCP_PII_SALT="$(openssl rand -hex 32)"
 ```
 
-Konektor je zatím **jediný v rodině na SDK 0.4.1 a FastMCP 2.x**; ostatní jsou
-na 0.4.2 a FastMCP 3. Pin míří na commit ve větvi SDK, ne do `main` — migrace
-je otevřený úkol a znamená obojí naráz.
+Od 31. 7. 2026 je konektor na **SDK 0.4.3 a FastMCP 3**, tedy na stejné verzi
+jako zbytek rodiny, a pin míří do `main` SDK.
 
 ## Před odesláním změny
 
@@ -28,15 +27,24 @@ Všechny čtyři musí projít — přesně totéž běží v CI.
 
 ## Konvence
 
-- **Výchozí větev je `main`.** PR se testuje, ale nebuilduje.
+- **Výchozí a release větev je `main`** — stejně jako u ostatních hostovaných
+  konektorů (`ares-mcp`, `raynet-mcp`, `dotykacka-mcp`, `upgates-com-mcp`).
+  PR do `main` se testuje, ale nebuilduje; teprve push do `main` staví image
+  a hlásí kandidátský digest platformě.
+- **`dev` je legacy větev bez release pravomoci.** Neběží na ní CI, nestaví se
+  z ní image a nehlásí se z ní digest. Zůstává jen kvůli historii; nové PR
+  patří do `main`. (Do 31. 7. 2026 byla `dev` GitHub default branch zaseknutá
+  na `b0570fd` a CI triggerovalo jen na ni — proto PR #3 do `main` neprošel
+  ani testy, ani buildem.)
 - Nový nástroj potřebuje: registraci přes `@tool(mcp, read_only=...)`, záznam
   v `display.tools` a test, který ho volá přímo.
 - Envelope na každém nástroji — `provenance` říká, odkud data jsou, `warnings`
   o tom, zda nejsou oříznutá.
 - Komentáře, docstringy i dokumentace jsou **česky**; `display.locales` musí
   pokrývat `cs` i `sk`.
-- Zápisové nástroje jsou opt-in a vždy s potvrzením konkrétního rozdílu —
-  nikdy „tiše zapsat a oznámit".
+- Zápisové nástroje jsou opt-in a standardně s potvrzením konkrétního
+  rozdílu; firemní politika může potvrzení vynutit. Pokud ho provozovatel
+  vědomě vypne, všechny ostatní fail-closed kontroly musí zůstat účinné.
 - Filtry se skládají z ověřených hodnot: pole z allowlistu, operátor
   z uzavřené množiny, typovaný literál. Surový filtr od modelu do URL nepatří.
 - Do repozitáře nepatří tajemství, `.env`, produkční logy ani cizí API

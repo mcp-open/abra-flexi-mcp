@@ -110,3 +110,88 @@ def test_scope_requires_complete_config():
         pytest.raises(ConnectorError),
     ):
         scope_by_sub_and_instance(ctx)
+
+
+# -- rozsah = vlastník credentials, ne přihlášený uživatel ---------------------
+#
+# Hosted aktivace může patřit týmu. Se `sub` v klíči by každý člen dostal na
+# tatáž data jiný token — tokeny by přestaly být sdílitelné a člověk by
+# nepoznal, že `<EMAIL_a…>` a `<EMAIL_b…>` je stejný e-mail.
+
+#: Platné UUID; `Principal` na `credential_owner_id` trvá v kanonickém tvaru.
+TEAM_ID = "6f1c9d2e-3a4b-4c5d-8e9f-0a1b2c3d4e5f"
+USER_ID = "11111111-2222-4333-8444-555555555555"
+OTHER_TEAM_ID = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b"
+
+
+def test_team_members_share_one_token_scope():
+    """Dva členové téhož týmu → identický rozsah, tedy identické tokeny."""
+    from tests.conftest import hosted_ctx
+
+    from connector.pii_fields import scope_by_sub_and_instance
+
+    with hosted_ctx(sub="clen-a", owner_kind="team", owner_id=TEAM_ID) as first:
+        scope_a = scope_by_sub_and_instance(first)
+    with hosted_ctx(sub="clen-b", owner_kind="team", owner_id=TEAM_ID) as second:
+        scope_b = scope_by_sub_and_instance(second)
+    assert scope_a == scope_b
+    value = {"email": "ucetni@firma.cz"}
+    assert Pseudonymizer(derive_key(*scope_a), POLICY).sanitize(dict(value)) == (
+        Pseudonymizer(derive_key(*scope_b), POLICY).sanitize(dict(value))
+    )
+
+
+def test_different_owners_stay_isolated():
+    """Jiný tým = jiný rozsah. Sdílení uvnitř týmu nesmí znamenat sdílení mezi nimi."""
+    from tests.conftest import hosted_ctx
+
+    from connector.pii_fields import scope_by_sub_and_instance
+
+    with hosted_ctx(sub="clen-a", owner_kind="team", owner_id=TEAM_ID) as first:
+        scope_a = scope_by_sub_and_instance(first)
+    with hosted_ctx(sub="clen-a", owner_kind="team", owner_id=OTHER_TEAM_ID) as second:
+        scope_b = scope_by_sub_and_instance(second)
+    assert scope_a != scope_b
+    value = {"email": "ucetni@firma.cz"}
+    assert Pseudonymizer(derive_key(*scope_a), POLICY).sanitize(dict(value)) != (
+        Pseudonymizer(derive_key(*scope_b), POLICY).sanitize(dict(value))
+    )
+
+
+def test_user_owned_credentials_keep_the_existing_tokens():
+    """Zpětná kompatibilita: pro `owner_kind="user"` je `owner_id == sub`.
+
+    SDK to vynucuje v `Principal.__post_init__`, takže se klíč nemění a
+    tokeny vydané před touhle změnou zůstávají bitově platné. Proto se do
+    klíče dává jen ID, ne dvojice kind+ID.
+    """
+    from openmcp_sdk.testing import with_context
+    from tests.conftest import CONFIG, hosted_ctx
+
+    from connector.pii_fields import scope_by_sub_and_instance
+
+    with hosted_ctx(sub=USER_ID, owner_kind="user", owner_id=USER_ID) as hosted:
+        hosted_scope = scope_by_sub_and_instance(hosted)
+    # Rozsah, jaký dávala implementace před touhle změnou (klíč ze `sub`).
+    with with_context(config=CONFIG, sub=USER_ID) as legacy:
+        legacy_scope = scope_by_sub_and_instance(legacy)
+    assert hosted_scope == legacy_scope
+
+    value = {"email": "ucetni@firma.cz"}
+    assert Pseudonymizer(derive_key(*hosted_scope), POLICY).sanitize(dict(value)) == (
+        Pseudonymizer(derive_key(*legacy_scope), POLICY).sanitize(dict(value))
+    )
+
+
+def test_local_run_falls_back_to_sub():
+    """Bez hosted identity je vlastník `None` — rozsah zůstává `sub`."""
+    from openmcp_sdk.testing import with_context
+
+    from connector.pii_fields import scope_by_sub_and_instance
+
+    with with_context(
+        config={"api_url": "https://demo.flexibee.eu:5434", "company": "demo"},
+        sub="lokalni-uzivatel",
+    ) as ctx:
+        assert ctx.principal.credential_owner_id is None
+        assert scope_by_sub_and_instance(ctx)[0] == "lokalni-uzivatel"

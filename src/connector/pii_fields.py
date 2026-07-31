@@ -50,12 +50,32 @@ PATTERN_CATEGORY: tuple[tuple[str, str], ...] = (
 
 
 def scope_by_sub_and_instance(ctx: RequestContext) -> tuple[str, ...]:
-    """Rozsah tokenů ``(sub, api_url, company)``.
+    """Rozsah tokenů ``(vlastník credentials, api_url, company)``.
 
-    Jeden uživatel může přepojit konektor na jinou firmu nebo instanci Flexi —
-    tokeny z různých firem pak nesmí být korelovatelné. Analogie
-    ``scope_by_sub_and_tenant``, která tu nejde použít (není OAuth kontext).
+    Rozsah je **vlastník přihlašovacích údajů**, ne přihlášený uživatel.
+    Hosted aktivace může patřit týmu (``credential_owner_kind="team"``) a
+    tehdy jsou to tatáž data pro všechny členy — se ``sub`` v klíči by
+    každý člen dostal na stejnou fakturu jiný ``<EMAIL_…>`` token a tokeny
+    by přestaly být sdílitelné napříč konverzacemi jednoho týmu.
+
+    Zpětná kompatibilita: pro ``credential_owner_kind="user"`` SDK vynucuje
+    ``credential_owner_id == sub`` (``Principal.__post_init__``), takže se
+    klíč nemění a existující tokeny zůstávají **bitově** stejné. Proto se do
+    klíče dává jen ID, ne dvojice kind+ID — přidání druhu by tokeny všem
+    dosavadním uživatelům přegenerovalo. Kolize UUID mezi uživatelem a týmem
+    je zanedbatelná.
+
+    Bez hosted identity (local-stdio, self-hosted) je vlastník ``None``;
+    fallback je ``principal.sub``, tedy dosavadní chování.
+
+    Instance a firma zůstávají v klíči: jeden vlastník může konektor
+    přepojit na jinou firmu nebo server Flexi a tokeny z různých firem
+    nesmí být korelovatelné.
     """
+    owner = ctx.principal.credential_owner_id
+    # Prázdný nebo nestringový vlastník NENÍ platný rozsah — tiché
+    # `str(None)` by z něj udělalo literál "None" sdílený všemi.
+    identity = owner.strip() if isinstance(owner, str) and owner.strip() else None
     api_url = str(ctx.config.get("api_url", "")).strip().lower()
     company = str(ctx.config.get("company", "")).strip().lower()
     if not api_url or not company:
@@ -65,7 +85,7 @@ def scope_by_sub_and_instance(ctx: RequestContext) -> tuple[str, ...]:
             ErrorCode.INTERNAL,
             "rozsah pseudonymizace vyžaduje api_url a company v konfiguraci",
         )
-    return (ctx.principal.sub, api_url, company)
+    return (identity or ctx.principal.sub, api_url, company)
 
 
 POLICY = PiiPolicy(

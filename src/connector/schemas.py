@@ -9,10 +9,11 @@ konkrétní instance.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from openmcp_sdk.envelope import EnvelopeBase
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 #: Operátory filtračního jazyka Flexi, které generické nástroje vystavují.
 #: `in`/`between`/`or` záměrně chybí — držíme jen AND řetěz jednoduchých
@@ -60,6 +61,20 @@ class FilterCondition(BaseModel):
         description="Porovnávaná hodnota; u operátorů is_* se vynechává.",
     )
 
+    @field_validator("value")
+    @classmethod
+    def _finite_number(cls, value: Any) -> Any:
+        """`inf`/`-inf`/`nan` nejsou hodnoty, které by šlo porovnávat.
+
+        Pydantic je u `float` ve výchozím nastavení propouští (`allow_inf_nan`)
+        a `Decimal(float("inf"))` z nich udělá literál `Infinity`, který by
+        odešel do filtru v URL. Filtr se tím rozbije tiše — Flexi vrátí
+        prázdný výsledek, ne chybu.
+        """
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("hodnota musí být konečné číslo")
+        return value
+
 
 class RowsEnvelope(EnvelopeBase):
     """Seznam záznamů evidence."""
@@ -83,16 +98,27 @@ class StockItemInput(BaseModel):
     """
 
     product_code: str = Field(description="Kód produktu z ceníku (bez prefixu code:).")
-    quantity: float = Field(gt=0, description="Množství v evidenční jednotce (mnozMj).")
-    unit_price: float = Field(ge=0, description="Cena za jednotku (cenaMj).")
+    # `allow_inf_nan=False` NENÍ redundantní vůči `gt`/`ge`: `inf > 0` je True,
+    # takže by `float("inf")` prošlo a do účetnictví by odešlo `Infinity`.
+    # (`nan` porovnání neprojde, `-inf` u `gt=0` taky ne — díra je `+inf`.)
+    quantity: float = Field(
+        gt=0, allow_inf_nan=False, description="Množství v evidenční jednotce (mnozMj)."
+    )
+    unit_price: float = Field(
+        ge=0, allow_inf_nan=False, description="Cena za jednotku (cenaMj)."
+    )
 
 
 class StockItemPriceInput(BaseModel):
     """Úprava existující položky skladového pohybu — jen cena a množství."""
 
     item_id: str = Field(description="ID položky dokladu (z detailu pohybu).")
-    unit_price: float | None = Field(default=None, ge=0, description="Nová cena za jednotku.")
-    quantity: float | None = Field(default=None, gt=0, description="Nové množství.")
+    unit_price: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False, description="Nová cena za jednotku."
+    )
+    quantity: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False, description="Nové množství."
+    )
 
     @model_validator(mode="after")
     def _at_least_one_change(self) -> StockItemPriceInput:
