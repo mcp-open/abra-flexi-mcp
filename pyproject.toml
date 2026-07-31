@@ -29,7 +29,7 @@ dependencies = [
 # spuštění celé sady lokálně i v CI (bez ad-hoc instalace v run kroku).
 [project.optional-dependencies]
 test = [
-  "pytest==8.4.2",
+  "pytest==9.0.3",
   "anyio>=4,<6",
   "ruff>=0.6,<1",
   "mypy>=1.11,<2",

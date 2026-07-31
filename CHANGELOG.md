@@ -71,6 +71,8 @@ jména, stejná vstupní schémata.
   větev bez release pravomoci.
 - **Dockerfile duplikoval seznam závislostí** a po bumpu SDK by srazil FastMCP
   zpět na 2.x. Shodu s `pyproject.toml` nově hlídá test.
+- **Testovací pytest 8.4.2 měl otevřený GHSA alert.** Pin je aktualizovaný na
+  první opravenou verzi 9.0.3; nejde o runtime závislost výsledného image.
 
 ## 0.1.0 — 2026-07-22
 
