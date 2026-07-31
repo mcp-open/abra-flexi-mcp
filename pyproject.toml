@@ -33,6 +33,7 @@ test = [
   "anyio>=4,<6",
   "ruff>=0.6,<1",
   "mypy>=1.11,<2",
+  "types-xmltodict>=0.13,<1",
 ]
 
 [tool.setuptools.packages.find]
@@ -55,9 +56,3 @@ python_version = "3.12"
 strict = true
 mypy_path = "src"
 packages = ["connector"]
-
-# xmltodict nemá typové stuby a je to úzké, dobře ohraničené API — přetypované
-# v našem `xml_codec`.
-[[tool.mypy.overrides]]
-module = "xmltodict"
-ignore_missing_imports = true

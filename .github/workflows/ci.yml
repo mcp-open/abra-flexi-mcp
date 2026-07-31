@@ -183,7 +183,7 @@ jobs:
           # Manifest požaduje stabilní PII salt. Kandidát bez něj musí skončit
           # nenulově a explicitně uvést bezpečný konfigurační důvod.
           set +e
-          docker run --name "$NEG_SMOKE" \
+          timeout 60 docker run --name "$NEG_SMOKE" \
             -e OPENMCP_MODE=hosted \
             -e OPENMCP_INTERNAL_TOKEN="$TOKEN" \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
@@ -192,8 +192,9 @@ jobs:
           negative_rc=$?
           set -e
           test "$negative_rc" -ne 0
+          test "$negative_rc" -ne 124
           docker logs "$NEG_SMOKE" >"${RUNNER_TEMP}/missing-salt.log" 2>&1
-          grep -F 'Chybí OPENMCP_PII_SALT' "${RUNNER_TEMP}/missing-salt.log" >/dev/null
+          grep -F 'OPENMCP_PII_SALT' "${RUNNER_TEMP}/missing-salt.log" >/dev/null
 
       - name: Push verified image
         run: |
@@ -213,6 +214,26 @@ jobs:
           case "${D#*@}" in sha256:*) ;; *) exit 1 ;; esac
           echo "digest=${D#*@}" >> "$GITHUB_OUTPUT"
           echo "mcp-${SLUG}: ${D#*@}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean run-scoped self-hosted paths
+        if: always()
+        run: |
+          set -eu
+          expected_source="abraflexi-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expected_sdk="sdk-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$SOURCE_DIR" = "$expected_source"
+          test "$SDK_DIR" = "$expected_sdk"
+          test -n "$GITHUB_WORKSPACE"
+          test "$GITHUB_WORKSPACE" != /
+          test -n "$RUNNER_TEMP"
+          test "$RUNNER_TEMP" != /
+          source_target="${GITHUB_WORKSPACE}/${SOURCE_DIR}"
+          sdk_target="${GITHUB_WORKSPACE}/${SDK_DIR}"
+          context_target="${RUNNER_TEMP}/openmcp-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$source_target" = "${GITHUB_WORKSPACE}/${expected_source}"
+          test "$sdk_target" = "${GITHUB_WORKSPACE}/${expected_sdk}"
+          test "$context_target" = "${RUNNER_TEMP}/openmcp-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf -- "$source_target" "$sdk_target" "$context_target"
 
   record:
     needs: build

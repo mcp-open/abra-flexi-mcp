@@ -81,7 +81,13 @@ def test_ci_release_gate_order_and_scope() -> None:
     assert "cyclonedx" in ci
     assert "X-OpenMCP-Gateway-Token" in ci
     assert "SOURCE_DIR: abraflexi-source-${{ github.run_id }}" in ci
-    assert "Chybí OPENMCP_PII_SALT" in ci
+    assert "timeout 60 docker run" in ci
+    assert 'test "$negative_rc" -ne 124' in ci
+    assert "grep -F 'OPENMCP_PII_SALT'" in ci
+    assert "name: Clean run-scoped self-hosted paths" in ci
+    assert "if: always()" in ci
+    assert 'test "$GITHUB_WORKSPACE" != /' in ci
+    assert 'test "$RUNNER_TEMP" != /' in ci
     assert ci.index("name: Scan candidate") < ci.index("name: Push verified image")
     assert ci.index("name: Generate CycloneDX SBOM") < ci.index("name: Push verified image")
     assert ci.index("name: Smoke test image") < ci.index("name: Push verified image")

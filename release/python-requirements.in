@@ -5,3 +5,4 @@ anyio>=4,<6
 mypy>=1.11,<2
 pytest==9.0.3
 ruff>=0.6,<1
+types-xmltodict>=0.13,<1
