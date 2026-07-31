@@ -31,10 +31,12 @@ jobs:
         with: { path: "${{ env.SLUG }}" }
       - id: sdkref
         run: echo "ref=$(tr -d '[:space:]' < "${SLUG}/.sdk-ref")" >> "$GITHUB_OUTPUT"
+      # `mcp-open/openmcp-sdk` je veřejný — checkout projde s výchozím
+      # `github.token`. Explicitní `token:` sem nepatří: OPENMCP_CI_TOKEN
+      # neexistuje, prázdná hodnota by checkout shodila na 401.
       - uses: actions/checkout@v4
         with:
           repository: mcp-open/openmcp-sdk
-          token: ${{ secrets.OPENMCP_CI_TOKEN }}
           ref: ${{ steps.sdkref.outputs.ref }}
           path: sdk
       - name: Lint, typecheck, manifest and tests
@@ -58,10 +60,10 @@ jobs:
         with: { path: "${{ env.SLUG }}" }
       - id: sdkref
         run: echo "ref=$(tr -d '[:space:]' < "${SLUG}/.sdk-ref")" >> "$GITHUB_OUTPUT"
+      # Veřejné repo, výchozí `github.token` stačí — viz komentář v jobu `test`.
       - uses: actions/checkout@v4
         with:
           repository: mcp-open/openmcp-sdk
-          token: ${{ secrets.OPENMCP_CI_TOKEN }}
           ref: ${{ steps.sdkref.outputs.ref }}
           path: sdk
       - name: Build and push immutable image
@@ -96,15 +98,91 @@ jobs:
           echo "digest=${D#*@}" >> "$GITHUB_OUTPUT"
           echo "**mcp-${SLUG}**: \`${D#*@}\`" >> "$GITHUB_STEP_SUMMARY"
 
+  # Cross-repo dispatch do `mcp-open/platforma` potřebuje token s právem zápisu
+  # do cizího repozitáře — `github.token` ho z principu nemá. Když
+  # OPENMCP_CI_TOKEN chybí, job se nesmí ani shodit, ani tvářit, že dispatch
+  # proběhl: přeskočí ho a nahlásí to do Step Summary jako nedokončený krok
+  # k manuálnímu autorizovanému dispatchi.
   record:
     needs: build
     runs-on: self-hosted
     steps:
-      - name: Record candidate digest in platform repository
+      - id: gate
+        name: Check dispatch authorisation
+        env:
+          OPENMCP_CI_TOKEN: ${{ secrets.OPENMCP_CI_TOKEN }}
         run: |
-          curl -sf -X POST \
-            -H "Authorization: token ${{ secrets.OPENMCP_CI_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/mcp-open/platforma/dispatches \
-            -d "{\"event_type\":\"component-built\",\"client_payload\":{\"component\":\"mcp-${SLUG}\",\"digest\":\"${{ needs.build.outputs.digest }}\"}}"
+          if [ -n "${OPENMCP_CI_TOKEN}" ]; then
+            echo "authorized=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      - name: Record candidate digest in platform repository
+        if: steps.gate.outputs.authorized == 'true'
+        env:
+          OPENMCP_CI_TOKEN: ${{ secrets.OPENMCP_CI_TOKEN }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::build nevrátil použitelný digest ('${DIGEST}')"; exit 1 ;;
+          esac
+          PAYLOAD=$(printf \
+            '{"event_type":"component-built","client_payload":{"component":"mcp-%s","digest":"%s"}}' \
+            "$SLUG" "$DIGEST")
+          RESPONSE_FILE=$(mktemp "${RUNNER_TEMP}/abraflexi-dispatch.XXXXXX")
+          trap 'rm -f "$RESPONSE_FILE"' EXIT
+          CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${OPENMCP_CI_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/mcp-open/platforma/dispatches \
+            -d "$PAYLOAD")
+          if [ "$CODE" != "204" ]; then
+            echo "::error::component-built dispatch selhal (HTTP ${CODE})"
+            cat "$RESPONSE_FILE" || true
+            {
+              echo "### ❌ component-built dispatch SELHAL"
+              echo ""
+              echo "- komponenta: \`mcp-${SLUG}\`"
+              echo "- digest: \`${DIGEST}\`"
+              echo "- HTTP: \`${CODE}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo "### ✅ component-built dispatch odeslán"
+            echo ""
+            echo "- cíl: \`mcp-open/platforma\`"
+            echo "- komponenta: \`mcp-${SLUG}\`"
+            echo "- digest: \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report skipped dispatch
+        if: steps.gate.outputs.authorized != 'true'
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          echo "::warning::OPENMCP_CI_TOKEN není nakonfigurován — component-built dispatch NEBYL proveden."
+          {
+            echo "### ⚠️ component-built dispatch NEBYL proveden"
+            echo ""
+            echo "Secret \`OPENMCP_CI_TOKEN\` není v tomto repozitáři ani v organizaci"
+            echo "dostupný, takže se do \`mcp-open/platforma\` **nic neodeslalo**."
+            echo "Image je postavený a pushnutý, ale platforma o kandidátském"
+            echo "digestu neví — vyžaduje **manuální autorizovaný dispatch**."
+            echo ""
+            echo "- komponenta: \`mcp-${SLUG}\`"
+            echo "- digest: \`${DIGEST:-<žádný>}\`"
+            echo ""
+            echo "Manuální krok (z prostředí s oprávněným tokenem):"
+            echo ""
+            echo '```sh'
+            echo 'curl -sS -X POST \'
+            echo '  -H "Authorization: Bearer $OPENMCP_CI_TOKEN" \'
+            echo '  -H "Accept: application/vnd.github+json" \'
+            echo '  https://api.github.com/repos/mcp-open/platforma/dispatches \'
+            echo "  -d '{\"event_type\":\"component-built\",\"client_payload\":{\"component\":\"mcp-${SLUG}\",\"digest\":\"${DIGEST:-<digest>}\"}}'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
