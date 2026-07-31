@@ -10,8 +10,8 @@ from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_IMAGE = (
-    "python:3.13-slim@sha256:"
-    "6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91"
+    "python:3.13.14-alpine3.24@sha256:"
+    "399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
 )
 
 
@@ -67,6 +67,8 @@ def test_lock_files_are_hash_pinned() -> None:
 def test_dependency_and_container_inputs_are_pinned() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert PYTHON_IMAGE in dockerfile
+    assert "python:3.13-slim" not in dockerfile
+    assert "useradd" not in dockerfile
     assert "--require-hashes" in dockerfile
     assert "--no-deps --no-build-isolation" in dockerfile
 
