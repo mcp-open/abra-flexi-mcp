@@ -349,3 +349,17 @@ def test_get_record_accepts_external_id(upstream):
         get_record("objednavka-prijata", "ext:SHOP:order-99")
     # Externí ID adresuje záznam přímo v cestě (percent-encodované dvojtečky).
     assert "/c/demo/objednavka-prijata/ext%3ASHOP%3Aorder-99.xml" in str(seen[0].url)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_filter_value_must_be_a_finite_number(bad, upstream):
+    """`Decimal(float("inf"))` dá literál `Infinity` v URL filtru.
+
+    Pydantic `float` nekonečno ve výchozím nastavení propouští, a protože
+    `FilterCondition.value` nemá `gt`/`ge`, projde i `-inf` a `NaN`. Flexi
+    na takový filtr vrátí prázdný výsledek, ne chybu — tiše špatná odpověď.
+    """
+    seen = upstream(lambda request: xml_response(winstrom_xml("adresar", [])))
+    with pytest.raises(ValueError):
+        FilterCondition(field="sumCelkem", op="gt", value=bad)
+    assert seen == []

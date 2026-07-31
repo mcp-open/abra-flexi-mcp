@@ -143,3 +143,49 @@ def test_pii_connector_has_compliance_doc():
     assert "čl. 30" in text, "chybí záznam o činnostech zpracování (čl. 30)"
     if SLUG != "template":
         assert "TODO" not in text, "COMPLIANCE.md není vyplněná"
+
+
+def test_runtime_dependencies_match_the_dockerfile():
+    """Dockerfile instaluje závislosti ručně — nesmí se rozejít s pyproject.
+
+    Konektor se v image instaluje s `--no-deps`, takže seznam v `RUN pip
+    install` je jediné místo, které runtime závislosti opravdu vybírá.
+    Duplicita se rozchází tiše: po bumpu SDK na FastMCP 3 tu zůstalo
+    `fastmcp>=2.11,<3`, které fastmcp po instalaci `./sdk` zase srazilo zpět
+    na 2.x. Zachytil by to až `pip check` v CI, ne psaní kódu.
+    """
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = {
+        spec for spec in data["project"]["dependencies"] if not spec.startswith("openmcp-sdk")
+    }
+    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    installed = set(re.findall(r'"([a-zA-Z0-9_.-]+(?:[<>=!]=?[^"]*)?)"', text))
+    missing = declared - installed
+    assert not missing, (
+        f"Dockerfile neinstaluje {sorted(missing)} v tom tvaru, jak je má "
+        "pyproject.toml — image poběží na jiných verzích než testy"
+    )
+
+
+def test_localized_fields_keep_every_hint():
+    """API lokalizací hint bezpodmínečně přepíše, i prázdným.
+
+    `catalog/localization.go` dělá `c.Fields[i].Hint = translated.Hint`, takže
+    pole bez `hint` v `display.locales.<lang>.fields` zůstane v aktivačním UI
+    úplně bez nápovědy — i když ho `credentials` v kořeni manifestu má.
+    """
+    display = MANIFEST.get("display") or {}
+    if display.get("schema_version") != 1:
+        pytest.skip("display schema_version 1 tuhle záruku nedává")
+    documented = {
+        field["key"]
+        for field in MANIFEST.get("credentials", []) + MANIFEST.get("user_config", [])
+        if field.get("hint")
+    }
+    for locale, content in (display.get("locales") or {}).items():
+        localized = {field["key"] for field in content.get("fields", []) if field.get("hint")}
+        missing = sorted(documented - localized)
+        assert not missing, (
+            f"display.locales.{locale}.fields nemá hint u {missing} — "
+            "lokalizace hint přepíše prázdným a v UI nápověda zmizí"
+        )

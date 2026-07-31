@@ -18,9 +18,13 @@ COPY abraflexi ./abraflexi
 # sáhl po `git`, který v image není, a build by spadl — přestože SDK je
 # přímo tady v `./sdk`. Git reference je pravda pro toho, kdo instaluje
 # z čistého klonu; image staví z přesného snapshotu podle `.sdk-ref`.
+# Seznam MUSÍ odpovídat `dependencies` v pyproject.toml (bez openmcp-sdk) —
+# hlídá `tests/test_packaging.py`. Duplicita tu je proto, že se konektor
+# instaluje s `--no-deps`, a rozejít se umí tiše: `fastmcp<3` tady po bumpu
+# SDK na FastMCP 3 downgradoval fastmcp až po instalaci sdk.
 RUN pip install --no-cache-dir --no-compile ./sdk \
     && pip install --no-cache-dir --no-compile \
-      "fastmcp>=2.11,<3" "pydantic>=2.6,<3" "httpx>=0.28,<0.29" "xmltodict>=0.13,<1" \
+      "fastmcp>=3.2,<4" "pydantic>=2.6,<3" "httpx>=0.28,<0.29" "xmltodict>=0.13,<1" \
     && pip install --no-cache-dir --no-compile --no-deps ./abraflexi \
     && pip check
 

@@ -6,13 +6,20 @@ navíc reset vlastní instance rozpočtu konektoru a stavba XML odpovědí.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
 import pytest
 from openmcp_sdk import testing
-from openmcp_sdk.context import AccessPolicy
+from openmcp_sdk.context import (
+    AccessPolicy,
+    Principal,
+    RequestContext,
+    reset_context,
+    set_context,
+)
 
 from connector import server
 from connector.client import Client
@@ -51,6 +58,40 @@ def ctx(
         policy=policy,
         **overrides,
     )
+
+
+@contextlib.contextmanager
+def hosted_ctx(
+    *,
+    sub: str,
+    owner_kind: str,
+    owner_id: str,
+    config: dict[str, Any] | None = None,
+) -> Iterator[RequestContext]:
+    """Kontext s identitou VLASTNÍKA credentials, jakou staví hosted gateway.
+
+    `testing.with_context` umí jen `sub` — `Principal` s
+    `credential_owner_kind`/`credential_owner_id` se musí postavit ručně.
+    `credential_version` je povinná: bez ní `Principal` odmítne neúplnou
+    identitu vlastníka.
+    """
+    principal = Principal(
+        sub,
+        credential_version=1,
+        credential_owner_kind=owner_kind,
+        credential_owner_id=owner_id,
+    )
+    request = RequestContext(
+        principal=principal,
+        secrets=SECRETS,
+        config={**CONFIG, **(config or {})},
+        policy=AccessPolicy(),
+    )
+    token = set_context(request)
+    try:
+        yield request
+    finally:
+        reset_context(token)
 
 
 # -- stavba XML odpovědí -------------------------------------------------------
@@ -112,13 +153,19 @@ def upstream(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[httpx.Reques
                 seen.append(request)
                 return handler(request)
 
+            # `kwargs` se PROPOUŠTĚJÍ dál — volající (např. `test_connection`)
+            # si podává vlastní `timeout`/`retry` a testy na ně musí vidět.
+            # Transport a `sleep` přepisujeme vždy: mock a nulové čekání.
             return Client(
                 api_url,
                 company,
                 username,
                 password,
-                transport=httpx.MockTransport(wrapped),
-                sleep=lambda _: None,
+                **{
+                    **kwargs,
+                    "transport": httpx.MockTransport(wrapped),
+                    "sleep": lambda _: None,
+                },
             )
 
         monkeypatch.setattr(server, "Client", factory)

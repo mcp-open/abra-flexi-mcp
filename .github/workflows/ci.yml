@@ -1,8 +1,21 @@
+# Větvový model: `main` je integrační i RELEASE větev. Testuje se z ní,
+# staví se z ní image a jen z ní se do platformy hlásí kandidátský digest.
+# Stejně to má každý další hostovaný konektor (`ares-mcp`, `raynet-mcp`,
+# `dotykacka-mcp`, `upgates-com-mcp`) i `openmcp-sdk` a `platforma`.
+#
+# `dev` je LEGACY větev bez release pravomoci. Nemaže se, ale nic z ní
+# nevzniká: neběží na ní CI, nestaví se image, nehlásí se digest.
+#
+# Proč to tu stálo za opravu: do 31. 7. 2026 tenhle soubor triggeroval jen na
+# `dev`, a `dev` byla zároveň GitHub default branch zaseknutá na `b0570fd`.
+# PR #3 (`chore/fix-image-build` → `main`) proto neprošel ani testy, ani
+# buildem — oprava se dostala na `main`, ale image z ní nikdy nevznikl a
+# platforma se o ní nedozvěděla. Autoritativní je `main` (`f655d11`).
 name: CI
 
 on:
-  push: { branches: [dev] }
-  pull_request: { branches: [dev] }
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
   workflow_dispatch:
 
 env:
