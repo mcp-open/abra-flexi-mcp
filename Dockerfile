@@ -6,7 +6,10 @@
 # `deploy/Makefile` přejmenovává adresář repozitáře na slug.
 # Hlídá to `tests/test_packaging.py` (kontroluje všechna tři) i
 # `openmcp-sdk validate`.
-FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+# Debian slim nyní obsahuje neopravitelné HIGH/CRITICAL OS nálezy. Explicitní
+# Alpine release zachovává oficiální CPython image a zmenšuje finální OS
+# plochu; Python patch i multiarch manifest jsou připnuté.
+FROM python:3.13.14-alpine3.24@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
 
 WORKDIR /app
 
@@ -23,7 +26,10 @@ RUN pip install --no-cache-dir --no-compile --only-binary=:all: \
     && pip check
 
 # Non-root. UID musí sedět s `runAsUser: 10001` v podSecurityContext.
-RUN useradd --uid 10001 --system --no-create-home --shell /usr/sbin/nologin openmcp
+# BusyBox `adduser` je součást Alpine base; nepřidáváme balík `shadow` jen
+# kvůli vytvoření runtime identity.
+RUN addgroup -S -g 10001 openmcp \
+    && adduser -S -D -H -u 10001 -G openmcp -s /sbin/nologin openmcp
 USER 10001
 
 # `python -m connector` volá run_connector("connector.yaml", …) s relativní

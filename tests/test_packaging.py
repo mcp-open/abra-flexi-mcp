@@ -58,7 +58,7 @@ def test_dockerfile_runs_as_expected_uid():
     """UID musí sedět s `runAsUser: 10001` v podSecurityContext."""
     text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "USER 10001" in text
-    assert "--uid 10001" in text
+    assert "adduser -S -D -H -u 10001" in text
 
 
 def test_dockerignore_exists_in_repo_root():
