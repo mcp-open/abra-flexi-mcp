@@ -206,7 +206,7 @@ def test_get_invoice_not_found(upstream):
     upstream(_invoices([]))
     with ctx(), pytest.raises(ConnectorError) as excinfo:
         get_issued_invoice("FV1-NEEXISTUJE")
-    assert excinfo.value.code is ErrorCode.INVALID_INPUT
+    assert excinfo.value.code is ErrorCode.NOT_FOUND
 
 
 def test_company_info(upstream):

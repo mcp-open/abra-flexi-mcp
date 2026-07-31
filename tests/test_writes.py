@@ -362,7 +362,7 @@ async def test_write_to_missing_item_is_refused(upstream):
         pytest.raises(ConnectorError) as excinfo,
     ):
         await update_invoice_item("16792", "999999", revenue_account="604005")
-    assert excinfo.value.code is ErrorCode.UPSTREAM_UNAVAILABLE
+    assert excinfo.value.code is ErrorCode.NOT_FOUND
     assert writes == []
 
 
@@ -380,9 +380,10 @@ async def test_write_to_missing_record_is_refused(upstream):
     with (
         elicitation("accept"),
         ctx(write=True, confirm=True),
-        pytest.raises(ConnectorError),
+        pytest.raises(ConnectorError) as excinfo,
     ):
         await update_invoice_header("999999", revenue_account="604005")
+    assert excinfo.value.code is ErrorCode.NOT_FOUND
     assert writes == []
 
 
@@ -399,7 +400,7 @@ async def test_write_to_missing_record_is_refused_without_confirmation(upstream)
     upstream(handler)
     with ctx(write=True, confirm=False), pytest.raises(ConnectorError) as excinfo:
         await update_invoice_header("999999", revenue_account="604005")
-    assert excinfo.value.code is ErrorCode.INVALID_INPUT
+    assert excinfo.value.code is ErrorCode.NOT_FOUND
     assert writes == []
 
 

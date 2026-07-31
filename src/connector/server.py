@@ -275,7 +275,7 @@ def _fetch_detail(
     rows = session.client.unwrap(payload, evidence)
     if not rows:
         raise ConnectorError(
-            ErrorCode.INVALID_INPUT, f"záznam v evidenci {evidence} nebyl nalezen"
+            ErrorCode.NOT_FOUND, f"záznam v evidenci {evidence} nebyl nalezen"
         )
     return rows[0]
 
@@ -1029,7 +1029,7 @@ def _result_ids(parsed: dict[str, Any]) -> list[str]:
 
 
 class _MissingTargetError(ConnectorError):
-    """Neexistující cíl zápisu, který se nesmí ignorovat ani bez elicitation."""
+    """Nenalezený cíl zápisu, který se nesmí ignorovat ani bez elicitation."""
 
 
 def _missing_target(what: str) -> _MissingTargetError:
@@ -1045,7 +1045,7 @@ def _missing_target(what: str) -> _MissingTargetError:
     diffu ignoruje, proto ``_write`` nese tenhle konkrétní typ až do
     ``apply`` a zastaví zápis i tam. Bez toho by PUT odešel na cizí ``id``.
     """
-    return _MissingTargetError(ErrorCode.INVALID_INPUT, f"{what} — zápis neproběhl")
+    return _MissingTargetError(ErrorCode.NOT_FOUND, f"{what} — zápis neproběhl")
 
 
 def _current_values(
@@ -1456,7 +1456,9 @@ def test_connection() -> str:
         # chyby (`_validated_api_url`, kontroly `base_url` v `UpstreamClient`,
         # `seg()` nad `company`) vznikají při STAVBĚ klienta, tedy uvnitř
         # `_Session()` — a ty chytá `except` výše. Z `company_info()` přijde
-        # `INVALID_INPUT` už jen se `status` (400/404/409/410/422).
+        # `INVALID_INPUT` už jen se `status` (400/409/422); 404/410 mapuje
+        # SDK na `NOT_FOUND`. Connection test se rozhoduje podle zachovaného
+        # HTTP statusu, takže 404 firmy zůstává `INSTANCE_UNKNOWN`.
         raise ConnectorError(
             ErrorCode.UPSTREAM_UNAVAILABLE,
             "Server ABRA Flexi je nedostupný, zkus to prosím později.",
