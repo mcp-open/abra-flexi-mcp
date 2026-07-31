@@ -145,8 +145,8 @@ def test_pii_connector_has_compliance_doc():
         assert "TODO" not in text, "COMPLIANCE.md není vyplněná"
 
 
-def test_runtime_dependencies_match_the_dockerfile():
-    """Dockerfile instaluje závislosti ručně — nesmí se rozejít s pyproject.
+def test_runtime_dependencies_match_the_lock_input():
+    """Přímé runtime závislosti musí zůstat ve vstupu hashovaného locku.
 
     Konektor se v image instaluje s `--no-deps`, takže seznam v `RUN pip
     install` je jediné místo, které runtime závislosti opravdu vybírá.
@@ -160,6 +160,12 @@ def test_runtime_dependencies_match_the_dockerfile():
     }
     text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     installed = set(re.findall(r'"([a-zA-Z0-9_.-]+(?:[<>=!]=?[^"]*)?)"', text))
+    lock_input = (ROOT / "release/runtime-requirements.in").read_text(encoding="utf-8")
+    installed = {
+        line.strip()
+        for line in lock_input.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
     missing = declared - installed
     assert not missing, (
         f"Dockerfile neinstaluje {sorted(missing)} v tom tvaru, jak je má "

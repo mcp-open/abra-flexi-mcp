@@ -3,10 +3,12 @@
 # ho dopĺňa vlastnými `--exclude` pri balení tar-u.
 .git
 .github
+**/.github
 .venv
 venv
 .env
 __pycache__
+**/__pycache__
 *.pyc
 *.egg-info
 build
@@ -16,6 +18,8 @@ node_modules
 .pytest_cache
 .ruff_cache
 docs
+**/docs
+**/tests
 DOCS.md
 SCAFFOLD.md
 CHANGELOG.md

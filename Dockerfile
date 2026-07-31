@@ -6,26 +6,20 @@
 # `deploy/Makefile` přejmenovává adresář repozitáře na slug.
 # Hlídá to `tests/test_packaging.py` (kontroluje všechna tři) i
 # `openmcp-sdk validate`.
-FROM python:3.13-slim
+FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
 
 WORKDIR /app
 
 # sdk nejdřív — konektor na něj závisí v pyproject.toml.
 COPY sdk ./sdk
 COPY abraflexi ./abraflexi
-# Závislosti se instalují zvlášť a teprve pak sdk + konektor s `--no-deps`.
-# Bez toho by pip řešil i `openmcp-sdk @ git+https://…` z pyproject.toml,
-# sáhl po `git`, který v image není, a build by spadl — přestože SDK je
-# přímo tady v `./sdk`. Git reference je pravda pro toho, kdo instaluje
-# z čistého klonu; image staví z přesného snapshotu podle `.sdk-ref`.
-# Seznam MUSÍ odpovídat `dependencies` v pyproject.toml (bez openmcp-sdk) —
-# hlídá `tests/test_packaging.py`. Duplicita tu je proto, že se konektor
-# instaluje s `--no-deps`, a rozejít se umí tiše: `fastmcp<3` tady po bumpu
-# SDK na FastMCP 3 downgradoval fastmcp až po instalaci sdk.
-RUN pip install --no-cache-dir --no-compile ./sdk \
-    && pip install --no-cache-dir --no-compile \
-      "fastmcp>=3.2,<4" "pydantic>=2.6,<3" "httpx>=0.28,<0.29" "xmltodict>=0.13,<1" \
-    && pip install --no-cache-dir --no-compile --no-deps ./abraflexi \
+# Síťové závislosti jsou plně tranzitivně uzamčené a hashované. SDK i
+# konektor se potom instalují výhradně z přesného lokálního snapshotu; pip
+# proto nikdy nepotřebuje git ani neřeší mutable dependency metadata.
+RUN pip install --no-cache-dir --no-compile --only-binary=:all: \
+      --require-hashes -r ./abraflexi/release/runtime-requirements.lock \
+    && pip install --no-cache-dir --no-compile --no-deps --no-build-isolation \
+      ./sdk ./abraflexi \
     && pip check
 
 # Non-root. UID musí sedět s `runAsUser: 10001` v podSecurityContext.

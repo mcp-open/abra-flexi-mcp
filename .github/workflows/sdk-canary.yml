@@ -4,26 +4,41 @@ on:
   schedule: [{ cron: "20 3 * * *" }]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   SLUG: abraflexi
 
 jobs:
   canary:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with: { path: "${{ env.SLUG }}" }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: "${{ env.SLUG }}"
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: { python-version: "3.13.9" }
+
+      # The SDK repository is public; no cross-repository secret is needed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: mcp-open/openmcp-sdk
-          token: ${{ secrets.OPENMCP_CI_TOKEN }}
           ref: main
           path: sdk
-      - name: Test against current SDK main
+          persist-credentials: false
+
+      - name: Test current SDK main against the locked environment
         run: |
-          docker run --rm -v "$PWD":/src -w /src python:3.13-slim sh -c '
-            set -eu
-            pip install -q --no-cache-dir ./sdk "./'"$SLUG"'[test]"
-            (cd '"$SLUG"' && openmcp-sdk validate connector.yaml)
-            python -m pytest '"$SLUG"'/tests -q
-          '
+          set -eu
+          python -m pip install -q --disable-pip-version-check \
+            --only-binary=:all: --require-hashes \
+            -r "${SLUG}/release/python-requirements.lock"
+          python -m pip install -q --disable-pip-version-check \
+            --no-deps --no-build-isolation ./sdk "./${SLUG}"
+          python -m pip check
+          (cd "$SLUG" && openmcp-sdk validate connector.yaml)
+          (cd "$SLUG" && python -m pytest tests -q)
